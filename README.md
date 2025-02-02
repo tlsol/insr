@@ -99,8 +99,6 @@ Pull requests are welcome. For major changes, please open an issue first to disc
 ## Contact
 
 - Website: [insr.finance](https://insr.finance)
-- Twitter: [@insr_finance](https://twitter.com/insr_finance)
-- Discord: [Join our community](https://discord.gg/insr)
 
 ## Acknowledgments
 
