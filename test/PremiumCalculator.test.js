@@ -13,39 +13,76 @@ describe("PremiumCalculator", function () {
         await calculator.waitForDeployment();
     });
 
-    it("Should calculate one month premium correctly", async function() {
-        const coverage = ethers.parseUnits("100", 6);
-        const duration = 30 * 24 * 60 * 60; // ONE_MONTH
-        
-        const premium = await calculator.calculatePremium(coverage, duration);
-        expect(premium).to.be.gt(0);
+    describe("Rate Management", function() {
+        it("Should initialize with default rates", async function() {
+            expect(await calculator.rateCount()).to.equal(3);
+            const rate = await calculator.durationRates(0);
+            expect(rate.rate).to.equal(200);
+        });
+
+        it("Should update rate correctly", async function() {
+            await calculator.updateRate(0, 0, 30 * 24 * 60 * 60, 300);
+            const rate = await calculator.durationRates(0);
+            expect(rate.rate).to.equal(300);
+        });
+
+        it("Should prevent rate overlap", async function() {
+            await expect(calculator.updateRate(
+                0,
+                0,
+                100 * 24 * 60 * 60,
+                200
+            )).to.be.revertedWith("Duration overlap with next rate");
+        });
     });
 
-    it("Should calculate one year premium with discount", async function() {
-        const coverageAmount = ethers.parseUnits("1000", 6);
-        const duration = 365 * 24 * 60 * 60; // ONE_YEAR
-        
-        const premium = await calculator.calculatePremium(coverageAmount, duration);
-        const expectedPremium = ethers.parseUnits("100", 6); // 10%
-        expect(premium).to.equal(expectedPremium);
+    describe("Premium Calculation", function() {
+        it("Should calculate premium correctly for different durations", async function() {
+            const coverage = ethers.parseUnits("1000", 6);
+            
+            // 1 month
+            const premium1 = await calculator.calculatePremium(
+                coverage,
+                30 * 24 * 60 * 60
+            );
+            expect(premium1).to.equal(coverage * 200n / 10000n);
+
+            // 3 months
+            const premium2 = await calculator.calculatePremium(
+                coverage,
+                90 * 24 * 60 * 60
+            );
+            expect(premium2).to.equal(coverage * 500n / 10000n);
+        });
+
+        it("Should enforce coverage limits", async function() {
+            const duration = 30 * 24 * 60 * 60;
+            
+            await expect(calculator.calculatePremium(
+                ethers.parseUnits("10", 6),
+                duration
+            )).to.be.revertedWith("Invalid coverage amount");
+
+            await expect(calculator.calculatePremium(
+                ethers.parseUnits("20000", 6),
+                duration
+            )).to.be.revertedWith("Invalid coverage amount");
+        });
     });
 
-    it("Should scale with duration", async function() {
-        const coverageAmount = ethers.parseUnits("1000", 6);
-        
-        const oneMonthPremium = await calculator.calculatePremium(coverageAmount, await calculator.ONE_MONTH());
-        const threeMonthPremium = await calculator.calculatePremium(coverageAmount, await calculator.THREE_MONTHS());
-        
-        // Compare raw numbers instead of using mul
-        expect(threeMonthPremium).to.equal(ethers.parseUnits("50", 6)); // 5% for 3 months
-    });
+    describe("Admin Functions", function() {
+        it("Should pause and unpause correctly", async function() {
+            await calculator.pause();
+            await expect(calculator.calculatePremium(
+                ethers.parseUnits("1000", 6),
+                30 * 24 * 60 * 60
+            )).to.be.revertedWith("Pausable: paused");
 
-    it("Should enforce minimum coverage", async function() {
-        const smallCoverage = ethers.parseUnits("25", 6);  // Below 50 USDC minimum
-        const duration = 30 * 24 * 60 * 60;
-        
-        await expect(
-            calculator.calculatePremium(smallCoverage, duration)
-        ).to.be.revertedWith("Coverage too low");
+            await calculator.unpause();
+            await calculator.calculatePremium(
+                ethers.parseUnits("1000", 6),
+                30 * 24 * 60 * 60
+            );
+        });
     });
 }); 

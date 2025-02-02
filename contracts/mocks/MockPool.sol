@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@aave/core-v3/contracts/protocol/libraries/types/DataTypes.sol";
 
 interface IMockERC20 is IERC20 {
     function mint(address to, uint256 amount) external;
@@ -30,7 +31,9 @@ contract MockPool {
         return amount;
     }
     
-    function getReserveData(address) external view returns (ReserveData memory) {
-        return ReserveData({aTokenAddress: aToken});
+    function getReserveData(address) external view returns (DataTypes.ReserveData memory) {
+        DataTypes.ReserveData memory data;
+        data.aTokenAddress = aToken;
+        return data;
     }
 } 
