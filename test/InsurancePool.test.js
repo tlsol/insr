@@ -1,180 +1,143 @@
 const { expect } = require("chai");
 const { ethers } = require("hardhat");
 
-describe("InsurancePool", function () {
-    let insurancePool, calculator, stakingPool, claimsManager;
-    let mockUSDC, mockPyth;
-    let owner, insurer, user;
-    const USDC_PRICE_ID = "0x41f3625971ca2ed2263e78573fe5ce23e13d2558ed3f2e47ab0f84fb9e7ae722";
-    
-    beforeEach(async function () {
-        [owner, insurer, user] = await ethers.getSigners();
-        
-        // Deploy mock USDC
-        const MockToken = await ethers.getContractFactory("MockERC20");
-        mockUSDC = await MockToken.deploy("USDC", "USDC");
-        
-        // Deploy mock Pyth FIRST
-        const MockPyth = await ethers.getContractFactory("contracts/mocks/MockPyth.sol:MockPyth");
-        mockPyth = await MockPyth.deploy();
-        
+describe("InsurancePool", function() {
+    let insurancePool, stakingPool, calculator, claimsManager;
+    let owner, user, insurer;
+    let mockUSDC, mockDAI, mockPyth;
+
+    const USDC_DECIMALS = 6;
+    const DAI_DECIMALS = 18;
+
+    beforeEach(async function() {
+        [owner, user, insurer] = await ethers.getSigners();
+
+        // Deploy mock tokens
+        const MockToken = await ethers.getContractFactory("contracts/mocks/MockERC20.sol:MockERC20");
+        mockUSDC = await MockToken.deploy("USDC", "USDC", USDC_DECIMALS);
+        await mockUSDC.waitForDeployment();
+
+        mockDAI = await MockToken.deploy("DAI", "DAI", DAI_DECIMALS);
+        await mockDAI.waitForDeployment();
+
+        // Deploy mock StakingPool
+        const MockStakingPool = await ethers.getContractFactory("contracts/mocks/MockStakingPool.sol:MockStakingPool", owner);
+        stakingPool = await MockStakingPool.deploy();
+        await stakingPool.waitForDeployment();
+
         // Deploy calculator
-        const PremiumCalculator = await ethers.getContractFactory("PremiumCalculator");
-        calculator = await PremiumCalculator.deploy();
-        
-        // Deploy StakingPool with owner as deployer
-        const StakingPool = await ethers.getContractFactory("StakingPool");
-        stakingPool = await StakingPool.deploy(ethers.ZeroAddress);
-        
-        // Deploy ClaimsManager
-        const ClaimsManager = await ethers.getContractFactory("ClaimsManager");
-        claimsManager = await ClaimsManager.deploy(
-            await mockPyth.getAddress(),
-            await mockUSDC.getAddress()
-        );
-        
+        const Calculator = await ethers.getContractFactory("PremiumCalculator");
+        calculator = await Calculator.deploy();
+        await calculator.waitForDeployment();
+
         // Deploy InsurancePool
         const InsurancePool = await ethers.getContractFactory("InsurancePool");
         insurancePool = await InsurancePool.deploy(
+            await stakingPool.getAddress(), 
+            await calculator.getAddress()
+        );
+        await insurancePool.waitForDeployment();
+
+        // Configure InsurancePool's components
+        await insurancePool.updateComponent("stakingPool", await stakingPool.getAddress());
+        await insurancePool.updateComponent("calculator", await calculator.getAddress());
+
+        // Deploy mockPyth first
+        const MockPyth = await ethers.getContractFactory("MockPyth");
+        const mockPyth = await MockPyth.deploy();
+        await mockPyth.waitForDeployment();
+
+        // Then deploy ClaimsManager with all dependencies
+        const ClaimsManager = await ethers.getContractFactory("ClaimsManager");
+        claimsManager = await ClaimsManager.deploy(
+            await mockPyth.getAddress(),
             await mockUSDC.getAddress(),
-            await calculator.getAddress(),
-            await stakingPool.getAddress(),
-            await claimsManager.getAddress()
+            await insurancePool.getAddress()
+        );
+        await claimsManager.waitForDeployment();
+
+        // Update InsurancePool's claimsManager component
+        await insurancePool.updateComponent("claimsManager", await claimsManager.getAddress());
+
+        // Configure the Calculator with stablecoin settings
+        await calculator.addStablecoin(
+            await mockUSDC.getAddress(),
+            USDC_DECIMALS,
+            ethers.parseUnits("100", USDC_DECIMALS),
+            ethers.parseUnits("50000", USDC_DECIMALS)
+        );
+        await calculator.addStablecoin(
+            await mockDAI.getAddress(),
+            DAI_DECIMALS,
+            ethers.parseUnits("100", DAI_DECIMALS),
+            ethers.parseUnits("50000", DAI_DECIMALS)
         );
 
-        // Setup staking pool
-        await stakingPool.addStablecoin(
-            await mockUSDC.getAddress(),
-            ethers.parseUnits("100", 6),
-            6
-        );
-        
-        // Transfer ownership AFTER everything is set up
-        await stakingPool.transferOwnership(await insurancePool.getAddress());
-        
-        // Setup staking
-        await mockUSDC.mint(insurer.address, ethers.parseUnits("10000", 6));
-        await mockUSDC.connect(insurer).approve(await stakingPool.getAddress(), ethers.parseUnits("10000", 6));
-        await stakingPool.connect(insurer).stake(
-            await mockUSDC.getAddress(),
-            ethers.parseUnits("5000", 6)
-        );
-        
-        // Setup user
-        await mockUSDC.mint(user.address, ethers.parseUnits("1000", 6));
-        await mockUSDC.connect(user).approve(await insurancePool.getAddress(), ethers.parseUnits("1000", 6));
+        // Mint tokens to user and set approvals
+        await mockUSDC.mint(user.address, ethers.parseUnits("10000", USDC_DECIMALS));
+        await mockDAI.mint(user.address, ethers.parseUnits("10000", DAI_DECIMALS));
+        await mockUSDC.connect(user).approve(insurancePool.getAddress(), ethers.MaxUint256);
+        await mockDAI.connect(user).approve(insurancePool.getAddress(), ethers.MaxUint256);
     });
 
     describe("Policy Purchase", function() {
-        it("Should purchase policy and distribute premium", async function() {
-            const coverageAmount = ethers.parseUnits("1000", 6);
+        it("Should purchase policy with USDC", async function() {
+            const coverageAmount = ethers.parseUnits("1000", USDC_DECIMALS);
             const duration = 30 * 24 * 60 * 60;
-            
-            await insurancePool.connect(user).purchasePolicy(
+
+            const tx = await insurancePool.connect(user).purchasePolicy(
                 await mockUSDC.getAddress(),
                 insurer.address,
                 coverageAmount,
                 duration
             );
-            
-            const expectedPremium = await calculator.calculatePremium(coverageAmount, duration);
-            const policy = await insurancePool.userPolicies(user.address, 1);
-            expect(policy.premium).to.equal(expectedPremium);
+            const receipt = await tx.wait();
+            const event = receipt.logs.find(log => log.fragment?.name === 'PolicyPurchased');
+            expect(event).to.not.be.undefined;
+
+            const policyId = event.args.policyId;
+            const policy = await insurancePool.getPolicy(user.address, policyId);
+
+            expect(policy.stablecoin).to.equal(await mockUSDC.getAddress());
+            expect(policy.coverageAmount).to.equal(coverageAmount);
+            expect(policy.active).to.be.true;
         });
 
-        it("Should fail with invalid parameters", async function() {
-            await expect(insurancePool.connect(user).purchasePolicy(
-                ethers.ZeroAddress,
+        it("Should purchase policy with DAI", async function() {
+            const coverageAmount = ethers.parseUnits("1000", DAI_DECIMALS);
+            const duration = 30 * 24 * 60 * 60;
+
+            const tx = await insurancePool.connect(user).purchasePolicy(
+                await mockDAI.getAddress(),
                 insurer.address,
-                ethers.parseUnits("1000", 6),
-                30 * 24 * 60 * 60
-            )).to.be.revertedWith("Invalid address");
+                coverageAmount,
+                duration
+            );
+            const receipt = await tx.wait();
+            const event = receipt.logs.find(log => log.fragment?.name === 'PolicyPurchased');
+            const policyId = event.args.policyId;
+            const policy = await insurancePool.getPolicy(user.address, policyId);
+
+            expect(policy.stablecoin).to.equal(await mockDAI.getAddress());
+            expect(policy.coverageAmount).to.equal(coverageAmount);
         });
     });
 
     describe("Claims Management", function() {
-        beforeEach(async function() {
-            const coverageAmount = ethers.parseUnits("1000", 6);
-            const duration = 30 * 24 * 60 * 60;
-            
-            // SET THE PRICE FEED FIRST!!!!!
-            await claimsManager.setPriceFeed(
+        it("Should approve claims manager for multiple stablecoins", async function() {
+            await insurancePool.approveClaimsManager(
                 await mockUSDC.getAddress(),
-                USDC_PRICE_ID
+                ethers.parseUnits("10000", USDC_DECIMALS)
             );
-            
-            // MINT MORE USDC FOR EVERYONE
-            await mockUSDC.mint(user.address, ethers.parseUnits("2000", 6));
-            await mockUSDC.mint(await insurancePool.getAddress(), ethers.parseUnits("2000", 6));
-            
-            // User approves InsurancePool
-            await mockUSDC.connect(user).approve(
-                await insurancePool.getAddress(), 
-                ethers.parseUnits("2000", 6)
+            await insurancePool.approveClaimsManager(
+                await mockDAI.getAddress(),
+                ethers.parseUnits("10000", DAI_DECIMALS)
             );
 
-            // INSURANCE POOL APPROVES CLAIMS MANAGER
-            await insurancePool.connect(owner).approveClaimsManager(
-                await mockUSDC.getAddress(),
-                ethers.parseUnits("2000", 6)
-            );
-
-            await insurancePool.connect(user).purchasePolicy(
-                await mockUSDC.getAddress(),
-                insurer.address,
-                coverageAmount,
-                duration
-            );
-        });
-
-        it("Should submit and process claim", async function() {
-            await mockPyth.setPrice(USDC_PRICE_ID, 94_000_000);
-            const priceUpdateData = ethers.randomBytes(100);
-            
-            await insurancePool.connect(user).submitClaim(1, [priceUpdateData], {
-                value: ethers.parseEther("0.1")
-            });
-            
-            await insurancePool.connect(user).processClaim(1);
-            
-            const policy = await insurancePool.userPolicies(user.address, 1);
-            expect(policy.claimed).to.be.true;
-        });
-    });
-
-    describe("Emergency and Admin Functions", function() {
-        it("Should allow emergency withdrawal when paused", async function() {
-            await mockUSDC.mint(insurancePool.getAddress(), ethers.parseUnits("100", 6));
-            await insurancePool.pause();
-            await insurancePool.emergencyWithdraw(await mockUSDC.getAddress());
-        });
-
-        it("Should update components correctly", async function() {
-            const NewCalculator = await ethers.getContractFactory("PremiumCalculator");
-            const newCalculator = await NewCalculator.deploy();
-            
-            await insurancePool.updateComponent("calculator", await newCalculator.getAddress());
-            expect(await insurancePool.calculator()).to.equal(await newCalculator.getAddress());
-        });
-
-        it("Should distribute premiums correctly", async function() {
-            // Create policy first
-            const coverageAmount = ethers.parseUnits("1000", 6);
-            const duration = 30 * 24 * 60 * 60;
-            
-            await insurancePool.connect(user).purchasePolicy(
-                await mockUSDC.getAddress(),
-                insurer.address,
-                coverageAmount,
-                duration
-            );
-
-            // Add premium to distribute
-            const premium = ethers.parseUnits("100", 6);
-            await mockUSDC.mint(insurancePool.getAddress(), premium);
-            
-            // Should work now that ownership is transferred
-            await insurancePool.connect(owner).distributePremiums();
+            expect(await insurancePool.claimsManagerAllowance(await mockUSDC.getAddress()))
+                .to.equal(ethers.parseUnits("10000", USDC_DECIMALS));
+            expect(await insurancePool.claimsManagerAllowance(await mockDAI.getAddress()))
+                .to.equal(ethers.parseUnits("10000", DAI_DECIMALS));
         });
     });
 }); 

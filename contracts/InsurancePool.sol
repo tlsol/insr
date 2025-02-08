@@ -5,65 +5,72 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/security/Pausable.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "./PremiumCalculator.sol";
-import "./ClaimsManager.sol";
-import "./StakingPool.sol";
+import "./interfaces/IStakingPool.sol";
+import "./interfaces/IPremiumCalculator.sol";
+import "./interfaces/IClaimsManager.sol";
 
 contract InsurancePool is Ownable, Pausable, ReentrancyGuard {
-    StakingPool public stakingPool;
-    ClaimsManager public claimsManager;
-    PremiumCalculator public calculator;
-    IERC20 public immutable usdc;
-    
     struct Policy {
-        address stablecoin;
-        uint256 coverageAmount;
-        uint256 premium;
-        uint256 expiration;
-        address insurer;
-        uint256 claimId;
-        bool claimed;
-        bool active;
+        address stablecoin;         // Which stablecoin this policy uses
+        uint256 coverageAmount;     // Amount in stablecoin's native decimals
+        uint256 premium;            // Premium paid in stablecoin
+        uint256 expiration;         // Timestamp when policy expires
+        address insurer;            // Address of the insurer
+        uint256 claimId;            // ID of the claim if filed
+        bool claimed;               // Whether a claim has been filed
+        bool active;                // Whether policy is still active
     }
-    
-    // user => policyId => Policy
-    mapping(address => mapping(uint256 => Policy)) public userPolicies;
+
+    // Core components
+    IStakingPool public stakingPool;
+    IPremiumCalculator public calculator;
+    IClaimsManager public claimsManager;
+
+    // Policy storage
     uint256 public nextPolicyId = 1;
+    mapping(address => mapping(uint256 => Policy)) public userPolicies; // user -> policyId -> Policy
     
-    event PolicyPurchased(address indexed user, uint256 indexed policyId, uint256 premium, uint256 coverageAmount);
+    // Stablecoin approvals for claims manager
+    mapping(address => uint256) public claimsManagerAllowance;
+
+    // Events
+    event PolicyPurchased(
+        address indexed user,
+        uint256 indexed policyId,
+        address stablecoin,
+        uint256 premium,
+        uint256 coverageAmount
+    );
     event ClaimSubmitted(uint256 indexed policyId, uint256 indexed claimId);
     event ClaimProcessed(uint256 indexed policyId, uint256 indexed claimId, bool approved);
     event PremiumDistributed(address indexed insurer, uint256 amount);
-    event ContractUpgraded(address indexed component, address newAddress);
-    
+    event ComponentUpdated(string indexed name, address newAddress);
+    event ClaimsManagerApproved(address stablecoin, uint256 amount);
+
     constructor(
-        address _usdc,
-        address _calculator,
         address _stakingPool,
-        address _claimsManager
+        address _calculator
     ) {
-        require(_usdc != address(0) && _calculator != address(0) && 
-                _stakingPool != address(0) && _claimsManager != address(0), 
-                "Invalid address");
-                
-        usdc = IERC20(_usdc);
-        calculator = PremiumCalculator(_calculator);
-        stakingPool = StakingPool(_stakingPool);
-        claimsManager = ClaimsManager(_claimsManager);
+        stakingPool = IStakingPool(_stakingPool);
+        calculator = IPremiumCalculator(_calculator);
     }
-    
+
+    // Purchase a new insurance policy
     function purchasePolicy(
         address stablecoin,
         address insurer,
         uint256 coverageAmount,
         uint256 duration
-    ) external whenNotPaused nonReentrant returns (uint256) {
-        require(stablecoin != address(0) && insurer != address(0), "Invalid address");
+    ) external whenNotPaused returns (uint256) {
         require(coverageAmount > 0, "Invalid coverage amount");
         require(duration > 0, "Invalid duration");
         
-        // Calculate premium first
-        uint256 premium = calculator.calculatePremium(coverageAmount, duration);
+        // Calculate premium using the specified stablecoin
+        uint256 premium = calculator.calculatePremium(
+            stablecoin,
+            coverageAmount,
+            duration
+        );
         
         // Create policy in staking pool first
         stakingPool.createPolicy(
@@ -73,9 +80,11 @@ contract InsurancePool is Ownable, Pausable, ReentrancyGuard {
             duration
         );
         
-        // Transfer premium last
-        require(IERC20(stablecoin).transferFrom(msg.sender, address(this), premium), 
-                "Premium transfer failed");
+        // Transfer premium using the correct stablecoin
+        require(
+            IERC20(stablecoin).transferFrom(msg.sender, address(this), premium),
+            "Premium transfer failed"
+        );
         
         // Create policy
         uint256 policyId = nextPolicyId++;
@@ -90,24 +99,19 @@ contract InsurancePool is Ownable, Pausable, ReentrancyGuard {
             active: true
         });
         
-        emit PolicyPurchased(msg.sender, policyId, premium, coverageAmount);
+        emit PolicyPurchased(msg.sender, policyId, stablecoin, premium, coverageAmount);
         return policyId;
     }
-    
-    function submitClaim(
-        uint256 policyId, 
-        bytes[] calldata priceUpdateData
-    ) external payable whenNotPaused nonReentrant {
+
+    function submitClaim(uint256 policyId) external whenNotPaused nonReentrant {
         Policy storage policy = userPolicies[msg.sender][policyId];
         require(policy.active, "Policy not active");
         require(policy.expiration > block.timestamp, "Policy expired");
         require(!policy.claimed, "Already claimed");
         
-        uint256 claimId = claimsManager.submitClaim{value: msg.value}(
+        uint256 claimId = claimsManager.submitClaim(
             policyId,
-            policy.coverageAmount,
-            policy.premium,
-            priceUpdateData
+            policy.coverageAmount
         );
         
         policy.claimId = claimId;
@@ -120,64 +124,94 @@ contract InsurancePool is Ownable, Pausable, ReentrancyGuard {
         require(policy.claimId != 0, "No claim submitted");
         require(!policy.claimed, "Already claimed");
         
-        claimsManager.processClaim(policy.claimId, policy.stablecoin);
+        claimsManager.processClaim(policy.claimId, true);
         
-        (,,,,,ClaimsManager.ClaimStatus status) = claimsManager.claims(policy.claimId);
+        (,,,,,, IClaimsManager.ClaimStatus status) = claimsManager.claims(policy.claimId);
         
-        if (status == ClaimsManager.ClaimStatus.Approved) {
+        if (status == IClaimsManager.ClaimStatus.Approved) {
             policy.claimed = true;
             policy.active = false;
-            require(usdc.transfer(msg.sender, policy.coverageAmount), "Payout failed");
+            require(IERC20(policy.stablecoin).transfer(msg.sender, policy.coverageAmount), "Payout failed");
         }
         
-        emit ClaimProcessed(policyId, policy.claimId, status == ClaimsManager.ClaimStatus.Approved);
+        emit ClaimProcessed(policyId, policy.claimId, status == IClaimsManager.ClaimStatus.Approved);
     }
     
-    function distributePremiums() external onlyOwner {
-        uint256 balance = usdc.balanceOf(address(this));
+    function distributePremiums(address stablecoin) external onlyOwner {
+        uint256 balance = IERC20(stablecoin).balanceOf(address(this));
         require(balance > 0, "No premiums to distribute");
         
         // Transfer ownership of premium to StakingPool
-        require(usdc.approve(address(stakingPool), balance), "Approval failed");
-        stakingPool.distributePremium(address(this), address(usdc), balance);
+        require(IERC20(stablecoin).approve(address(stakingPool), balance), "Approval failed");
+        stakingPool.distributePremium(stablecoin, balance);
         emit PremiumDistributed(address(stakingPool), balance);
     }
-    
+
+    // Approve claims manager to spend stablecoins
+    function approveClaimsManager(
+        address stablecoin,
+        uint256 amount
+    ) external onlyOwner {
+        require(amount > 0, "Invalid amount");
+        IERC20(stablecoin).approve(address(claimsManager), amount);
+        claimsManagerAllowance[stablecoin] = amount;
+        emit ClaimsManagerApproved(stablecoin, amount);
+    }
+
+    // Update component addresses
     function updateComponent(
-        string memory component,
+        string memory name,
         address newAddress
     ) external onlyOwner {
         require(newAddress != address(0), "Invalid address");
         
-        if (keccak256(bytes(component)) == keccak256(bytes("calculator"))) {
-            calculator = PremiumCalculator(newAddress);
-        } else if (keccak256(bytes(component)) == keccak256(bytes("stakingPool"))) {
-            stakingPool = StakingPool(newAddress);
-        } else if (keccak256(bytes(component)) == keccak256(bytes("claimsManager"))) {
-            claimsManager = ClaimsManager(newAddress);
+        if (keccak256(bytes(name)) == keccak256(bytes("stakingPool"))) {
+            stakingPool = IStakingPool(newAddress);
+        } else if (keccak256(bytes(name)) == keccak256(bytes("calculator"))) {
+            calculator = IPremiumCalculator(newAddress);
+        } else if (keccak256(bytes(name)) == keccak256(bytes("claimsManager"))) {
+            claimsManager = IClaimsManager(newAddress);
         } else {
-            revert("Invalid component");
+            revert("Invalid component name");
         }
         
-        emit ContractUpgraded(newAddress, newAddress);
+        emit ComponentUpdated(name, newAddress);
     }
-    
-    function emergencyWithdraw(address token) external onlyOwner whenPaused {
-        require(token != address(0), "Invalid token");
-        uint256 balance = IERC20(token).balanceOf(address(this));
-        require(balance > 0, "No balance");
-        require(IERC20(token).transfer(owner(), balance), "Transfer failed");
+
+    // View functions
+    function getPolicy(
+        address user,
+        uint256 policyId
+    ) external view returns (Policy memory) {
+        return userPolicies[user][policyId];
     }
-    
+
+    function isPolicyActive(
+        address user,
+        uint256 policyId
+    ) external view returns (bool) {
+        Policy memory policy = userPolicies[user][policyId];
+        return policy.active && 
+               !policy.claimed && 
+               block.timestamp <= policy.expiration;
+    }
+
+    // Admin functions
     function pause() external onlyOwner {
         _pause();
     }
-    
+
     function unpause() external onlyOwner {
         _unpause();
     }
-    
-    function approveClaimsManager(address token, uint256 amount) external onlyOwner {
-        IERC20(token).approve(address(claimsManager), amount);
+
+    // Emergency functions
+    function emergencyWithdraw(
+        address token,
+        address to,
+        uint256 amount
+    ) external onlyOwner {
+        require(to != address(0), "Invalid address");
+        require(IERC20(token).transfer(to, amount), "Transfer failed");
     }
 }

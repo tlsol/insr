@@ -3,12 +3,21 @@ require("dotenv").config();
 
 /** @type import('hardhat/config').HardhatUserConfig */
 module.exports = {
-  solidity: "0.8.20",
+  solidity: {
+    version: "0.8.20",
+    settings: {
+      optimizer: {
+        enabled: true,
+        runs: 200
+      }
+    }
+  },
   networks: {
-    base: {
-      url: "https://mainnet.base.org",
+    bsc: {
+      url: "https://bsc-dataseed1.binance.org",
+      chainId: 56,
       accounts: [process.env.PRIVATE_KEY],
-      chainId: 8453,
+      gasPrice: 5000000000, // 5 g
     }
   },
   etherscan: {

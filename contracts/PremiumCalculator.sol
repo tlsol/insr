@@ -7,120 +7,140 @@ import "@openzeppelin/contracts/security/Pausable.sol";
 contract PremiumCalculator is Ownable, Pausable {
     uint256 public constant RATE_DECIMALS = 10000;
     
-    struct DurationRate {
-        uint256 minDuration;
-        uint256 maxDuration;
-        uint256 rate;
+    // Stablecoin configuration
+    struct StablecoinConfig {
+        bool supported;
+        uint8 decimals;
+        uint256 minCoverage;    // Minimum coverage amount in stablecoin's decimals
+        uint256 maxCoverage;    // Maximum coverage amount in stablecoin's decimals
     }
+    
+    // Duration-based rate configuration
+    struct DurationRate {
+        uint256 minDuration;    // Minimum duration in seconds
+        uint256 maxDuration;    // Maximum duration in seconds
+        uint256 rate;          // Rate in basis points (1/10000)
+    }
+
+    // Mapping of stablecoin address to its configuration
+    mapping(address => StablecoinConfig) public stablecoins;
+    
+    // Array to store duration rates
+    DurationRate[] public durationRates;
     
     // Duration bounds
     uint256 public constant MIN_DURATION = 7 days;
     uint256 public constant MAX_DURATION = 365 days;
     
     // Coverage bounds
-    uint256 public constant MIN_COVERAGE = 50e6;  // 50 USDC minimum coverage
-    uint256 public constant MAX_COVERAGE = 10000e6;  // 10k USDC maximum coverage
     uint256 public constant MIN_PREMIUM = 1e6;  // 1 USDC minimum premium
     
-    // Rates for different durations
-    mapping(uint256 => DurationRate) public durationRates;
-    uint256 public rateCount;
-    
+    event StablecoinAdded(address stablecoin, uint8 decimals, uint256 minCoverage, uint256 maxCoverage);
+    event StablecoinRemoved(address stablecoin);
+    event DurationRateUpdated(uint256 index, uint256 minDuration, uint256 maxDuration, uint256 rate);
     event RateUpdated(uint256 indexed index, uint256 minDuration, uint256 maxDuration, uint256 rate);
     event RateRemoved(uint256 indexed index);
     
     constructor() {
-        // Initialize default rates
-        _addRate(0, 30 days, 200);     // 2% for up to 1 month
-        _addRate(30 days, 90 days, 500);  // 5% for 1-3 months
-        _addRate(90 days, 365 days, 1000); // 10% for 3-12 months
+        // Initialize with default duration rates
+        durationRates.push(DurationRate(7 days, 30 days, 200));    // 2% for 1-4 weeks
+        durationRates.push(DurationRate(30 days, 90 days, 500));   // 5% for 1-3 months
+        durationRates.push(DurationRate(90 days, 180 days, 900));  // 9% for 3-6 months
     }
     
-    function _addRate(uint256 minDuration, uint256 maxDuration, uint256 rate) private {
-        require(minDuration < maxDuration, "Invalid duration range");
-        require(rate > 0 && rate < RATE_DECIMALS, "Invalid rate");
-        
-        durationRates[rateCount] = DurationRate({
-            minDuration: minDuration,
-            maxDuration: maxDuration,
-            rate: rate
-        });
-        
-        emit RateUpdated(rateCount, minDuration, maxDuration, rate);
-        rateCount++;
-    }
-    
-    function updateRate(
-        uint256 index,
-        uint256 minDuration,
-        uint256 maxDuration,
-        uint256 rate
+    function addStablecoin(
+        address _stablecoin,
+        uint8 _decimals,
+        uint256 _minCoverage,
+        uint256 _maxCoverage
     ) external onlyOwner {
-        require(index < rateCount, "Invalid rate index");
-        require(minDuration < maxDuration, "Invalid duration range");
-        require(rate > 0 && rate < RATE_DECIMALS, "Invalid rate");
+        require(_stablecoin != address(0), "Invalid stablecoin address");
+        require(!stablecoins[_stablecoin].supported, "Stablecoin already supported");
         
-        // Ensure no gaps in duration coverage
-        if (index > 0) {
-            require(minDuration >= durationRates[index - 1].maxDuration, "Duration overlap with previous rate");
-        }
-        if (index < rateCount - 1) {
-            require(maxDuration <= durationRates[index + 1].minDuration, "Duration overlap with next rate");
-        }
-        
-        durationRates[index] = DurationRate({
-            minDuration: minDuration,
-            maxDuration: maxDuration,
-            rate: rate
+        stablecoins[_stablecoin] = StablecoinConfig({
+            supported: true,
+            decimals: _decimals,
+            minCoverage: _minCoverage,
+            maxCoverage: _maxCoverage
         });
-        
-        emit RateUpdated(index, minDuration, maxDuration, rate);
+
+        emit StablecoinAdded(_stablecoin, _decimals, _minCoverage, _maxCoverage);
     }
-    
-    function removeRate(uint256 index) external onlyOwner {
-        require(index < rateCount, "Invalid rate index");
-        require(rateCount > 1, "Cannot remove last rate");
-        
-        // Shift remaining rates
-        for (uint256 i = index; i < rateCount - 1; i++) {
-            durationRates[i] = durationRates[i + 1];
-        }
-        delete durationRates[rateCount - 1];
-        rateCount--;
-        
-        emit RateRemoved(index);
+
+    function removeStablecoin(address _stablecoin) external onlyOwner {
+        require(stablecoins[_stablecoin].supported, "Stablecoin not supported");
+        delete stablecoins[_stablecoin];
+        emit StablecoinRemoved(_stablecoin);
     }
     
     function calculatePremium(
-        uint256 coverage,
-        uint256 duration
-    ) external view whenNotPaused returns (uint256) {
-        require(coverage >= MIN_COVERAGE && coverage <= MAX_COVERAGE, "Invalid coverage amount");
-        require(duration >= MIN_DURATION && duration <= MAX_DURATION, "Invalid duration");
+        address _stablecoin,
+        uint256 _coverageAmount,
+        uint256 _duration
+    ) external view returns (uint256) {
+        StablecoinConfig memory config = stablecoins[_stablecoin];
+        require(config.supported, "Unsupported stablecoin");
+        require(_coverageAmount >= config.minCoverage, "Coverage too low");
+        require(_coverageAmount <= config.maxCoverage, "Coverage too high");
         
+        // Find the appropriate duration rate
         uint256 rate;
-        bool rateFound = false;
+        bool durationFound = false;
         
-        // Find applicable rate
-        for (uint256 i = 0; i < rateCount; i++) {
-            DurationRate memory dRate = durationRates[i];
-            if (duration >= dRate.minDuration && duration <= dRate.maxDuration) {
-                rate = dRate.rate;
-                rateFound = true;
+        for (uint256 i = 0; i < durationRates.length; i++) {
+            if (_duration >= durationRates[i].minDuration && 
+                _duration <= durationRates[i].maxDuration) {
+                rate = durationRates[i].rate;
+                durationFound = true;
                 break;
             }
         }
         
-        require(rateFound, "No rate found for duration");
-        
-        uint256 premium = (coverage * rate) / RATE_DECIMALS;
-        require(premium >= MIN_PREMIUM, "Premium too low");
-        
-        return premium;
+        require(durationFound, "Invalid duration");
+
+        // Calculate premium: coverage * rate / 10000
+        return (_coverageAmount * rate) / 10000;
     }
     
-    function getRateCount() external view returns (uint256) {
-        return rateCount;
+    function updateDurationRate(
+        uint256 _index,
+        uint256 _minDuration,
+        uint256 _maxDuration,
+        uint256 _rate
+    ) external onlyOwner {
+        require(_index < durationRates.length, "Invalid index");
+        require(_rate <= 10000, "Rate too high"); // Max 100%
+        
+        durationRates[_index] = DurationRate({
+            minDuration: _minDuration,
+            maxDuration: _maxDuration,
+            rate: _rate
+        });
+
+        emit DurationRateUpdated(_index, _minDuration, _maxDuration, _rate);
+    }
+    
+    function getDurationRatesLength() external view returns (uint256) {
+        return durationRates.length;
+    }
+    
+    function getStablecoinConfig(address _stablecoin) 
+        external 
+        view 
+        returns (
+            bool supported,
+            uint8 decimals,
+            uint256 minCoverage,
+            uint256 maxCoverage
+        ) 
+    {
+        StablecoinConfig memory config = stablecoins[_stablecoin];
+        return (
+            config.supported,
+            config.decimals,
+            config.minCoverage,
+            config.maxCoverage
+        );
     }
     
     function pause() external onlyOwner {
