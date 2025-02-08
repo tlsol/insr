@@ -4,6 +4,19 @@ pragma solidity ^0.8.20;
 import "../interfaces/IStakingPool.sol";
 
 contract MockStakingPool is IStakingPool {
+    address public immutable SELF;
+    address public claimsManager;
+
+    constructor() {
+        SELF = address(this);
+    }
+
+    // Add receive function to accept ETH
+    receive() external payable {}
+    
+    // Add fallback function just in case
+    fallback() external payable {}
+
     function stake(address token, uint256 amount) external {}
     function unstake(address token, uint256 amount) external {}
     
@@ -35,4 +48,12 @@ contract MockStakingPool is IStakingPool {
     }
     
     function distributePremium(address stablecoin, uint256 amount) external {}
+
+    function getAddress() external view returns (address) {
+        return SELF;
+    }
+
+    function setClaimsManager(address _claimsManager) external {
+        claimsManager = _claimsManager;
+    }
 } 

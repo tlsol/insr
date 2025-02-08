@@ -11,22 +11,21 @@ describe("StakingPool Venus Integration", function() {
         [owner, staker] = await ethers.getSigners();
         
         // Deploy mock tokens
-        const MockToken = await ethers.getContractFactory("contracts/mocks/MockERC20.sol:MockERC20");
-        mockUSDC = await MockToken.deploy("USDC", "USDC", 6);
+        const MockToken = await ethers.getContractFactory("MockERC20");
+        mockUSDC = await MockToken.deploy("USD Coin", "USDC", 6);
         await mockUSDC.waitForDeployment();
 
         // Deploy mock Venus contracts
         const MockVToken = await ethers.getContractFactory("MockVToken");
-        mockVToken = await MockVToken.deploy(
-            "Venus USDC", 
-            "vUSDC",
-            await mockUSDC.getAddress()
-        );
+        mockVToken = await MockVToken.deploy("vUSDC", "vUSDC", await mockUSDC.getAddress());
         await mockVToken.waitForDeployment();
 
-        // Deploy mock Venus pool
+        // Deploy mock Venus pool with proper constructor args
         const MockVenusPool = await ethers.getContractFactory("MockVenusPool");
-        mockVenusPool = await MockVenusPool.deploy();
+        mockVenusPool = await MockVenusPool.deploy(
+            await mockUSDC.getAddress(),
+            await mockVToken.getAddress()
+        );
         await mockVenusPool.waitForDeployment();
 
         // Deploy mock FTSO

@@ -84,6 +84,11 @@ contract StakingPool is Ownable, Pausable, ReentrancyGuard {
     // Add statistics contract
     IStatistics public statistics;
 
+    // Add emergency state variables
+    bool public isEmergency;
+    IContractRegistry public registry;
+    IVenusPool public venusPool;
+
     constructor(
         address _registry,
         address _venusPool
@@ -355,4 +360,68 @@ contract StakingPool is Ownable, Pausable, ReentrancyGuard {
         statistics = IStatistics(_statistics);
         emit StatisticsUpdated(_statistics);
     }
+
+    // Emergency unstake in case Venus/FTSO has issues
+    function emergencyUnstake(
+        address user,
+        address token
+    ) external onlyOwner {
+        require(isEmergency, "Not in emergency mode");
+        require(token != address(0), "Invalid token");
+        
+        uint256 amount = insurers[user].collateral[token];
+        require(amount > 0, "No stake found");
+
+        // Clear Venus positions if they exist
+        if (useVenus && vTokens[token] != address(0)) {
+            try IVenusPool(VENUS_POOL).redeem(vTokens[token], amount) {
+                // Venus handles the token transfer
+            } catch {
+                // If Venus fails, we do the transfer ourselves
+                require(IERC20(token).transfer(user, amount), "Transfer failed");
+            }
+        } else {
+            // If not using Venus, transfer directly
+            require(IERC20(token).transfer(user, amount), "Transfer failed");
+        }
+
+        // Reset user's collateral
+        insurers[user].collateral[token] = 0;
+        insurers[user].lockedCollateral[token] = 0;
+        
+        emit EmergencyUnstake(user, token, amount);
+    }
+
+    // Toggle emergency mode
+    function setEmergencyMode(bool _isEmergency) external onlyOwner {
+        isEmergency = _isEmergency;
+        emit EmergencyModeSet(_isEmergency);
+    }
+
+    // Rescue stuck tokens
+    function rescueToken(address token, uint256 amount) external onlyOwner {
+        require(token != address(0), "Invalid token");
+        require(amount > 0, "Amount must be > 0");
+        require(IERC20(token).transfer(owner(), amount), "Transfer failed");
+        emit TokenRescued(token, amount);
+    }
+
+    // Update critical addresses in case of compromised contracts
+    function updateRegistry(address _registry) external onlyOwner {
+        require(_registry != address(0), "Invalid address");
+        registry = IContractRegistry(_registry);
+        emit RegistryUpdated(_registry);
+    }
+
+    function updateVenusPool(address _venusPool) external onlyOwner {
+        require(_venusPool != address(0), "Invalid address");
+        venusPool = IVenusPool(_venusPool);
+        emit VenusPoolUpdated(_venusPool);
+    }
+
+    event EmergencyUnstake(address indexed user, address token, uint256 amount);
+    event EmergencyModeSet(bool isEmergency);
+    event TokenRescued(address token, uint256 amount);
+    event RegistryUpdated(address registry);
+    event VenusPoolUpdated(address venusPool);
 }

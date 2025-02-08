@@ -14,6 +14,10 @@ contract MockFTSOv2 is IFTSOv2 {
         decimals[feedId] = decimal;
     }
 
+    function getCurrentPrice(bytes21 _symbol) external view returns (uint256, uint256, uint256, bool) {
+        return (prices[_symbol], block.timestamp, uint256(uint8(decimals[_symbol])), true);
+    }
+
     function getFeedsById(bytes21[] memory _feedIds) external view returns (
         uint256[] memory _feedValues,
         int8[] memory _decimals,
