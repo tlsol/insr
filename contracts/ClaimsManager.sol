@@ -48,6 +48,8 @@ contract ClaimsManager is Ownable, Pausable, ReentrancyGuard {
     uint256 public submissionTimeout;
     uint256 public processingTimeout;
 
+    mapping(address => uint256) public lastPrices;
+
     event StablecoinConfigured(
         address token,
         bytes21 priceId,
@@ -270,15 +272,33 @@ contract ClaimsManager is Ownable, Pausable, ReentrancyGuard {
         bytes21[] memory feedIds = new bytes21[](1);
         feedIds[0] = config.priceId;
         
-        (uint256[] memory values, int8[] memory decimals, ) = FTSO.getFeedsById(feedIds);
+        (uint256[] memory values, int8[] memory decimals, uint256[] memory timestamps) = FTSO.getFeedsById(feedIds);
         require(values.length > 0, "No price data");
         
-        // We want to go from current decimals to 18 decimals
-        // If we have -8 decimals (8 decimal places), we need 10 more places to get to 18
-        uint8 decimalPlaces = uint8(-decimals[0]); // 8 decimal places
-        uint8 neededDecimals = 18 - decimalPlaces; // 10 more needed
+        // Add staleness check - 1 hour max age
+        require(block.timestamp - timestamps[0] <= 1 hours, "Price too old");
         
+        // Convert to 18 decimals
+        uint8 decimalPlaces = uint8(-decimals[0]);
+        uint8 neededDecimals = 18 - decimalPlaces;
         return values[0] * (10 ** neededDecimals);
+    }
+
+    function updateAndGetPrice(address token) public returns (uint256) {
+        uint256 newPrice = getTokenPrice(token);
+        
+        // Validate price change
+        uint256 oldPrice = lastPrices[token];
+        if (oldPrice != 0) {
+            uint256 priceChange = oldPrice > newPrice 
+                ? ((oldPrice - newPrice) * 100) / oldPrice 
+                : ((newPrice - oldPrice) * 100) / oldPrice;
+            require(priceChange <= 20, "Price change too large");
+        }
+        
+        // Update state
+        lastPrices[token] = newPrice;
+        return newPrice;
     }
 
     function isDepegged(address token) public view returns (bool) {

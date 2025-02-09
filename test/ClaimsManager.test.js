@@ -1,5 +1,6 @@
 const { expect } = require("chai");
 const { ethers } = require("hardhat");
+const { time } = require("@nomicfoundation/hardhat-network-helpers");
 
 describe("ClaimsManager", function() {
     let claimsManager, stakingPool, insurancePool, mockUSDC, mockFTSO;
@@ -67,32 +68,55 @@ describe("ClaimsManager", function() {
 
     describe("Price Feeds", function() {
         it("Should get correct token price", async function() {
-            // Get raw values from FTSO first
-            const feedIds = [USDC_FEED];
-            const [values, decimals] = await mockFTSO.getFeedsById(feedIds);
-            console.log("FTSO values:", values[0].toString());
-            console.log("FTSO decimals:", decimals[0].toString());
-
-            // Then get price through ClaimsManager
+            await claimsManager.updateAndGetPrice(await mockUSDC.getAddress());
             const price = await claimsManager.getTokenPrice(await mockUSDC.getAddress());
-            console.log("ClaimsManager price:", price.toString());
-            
             expect(price).to.equal(ethers.parseUnits("1", 18));
         });
 
         it("Should detect depeg condition", async function() {
             await mockFTSO.setPrice21(
                 USDC_FEED,
-                94000000n,
+                94000000n,   // $0.94 with 8 decimals
                 8
             );
             
+            await claimsManager.updateAndGetPrice(await mockUSDC.getAddress());
             const isDepegged = await claimsManager.isDepegged(await mockUSDC.getAddress());
-            const price = await claimsManager.getTokenPrice(await mockUSDC.getAddress());
-            console.log("Depeg price:", price.toString());
-            console.log("Depeg threshold:", ethers.parseUnits("0.95", 6).toString());
-            
             expect(isDepegged).to.be.true;
+        });
+    });
+
+    describe("Price Feed Validations", function() {
+        it("Should reject stale prices", async function() {
+            const currentTime = await time.latest();
+            await mockFTSO.setPrice21(USDC_FEED, 100000000n, 8);
+            await claimsManager.updateAndGetPrice(await mockUSDC.getAddress());
+            
+            await time.increaseTo(currentTime + 7200);
+            
+            await expect(
+                claimsManager.updateAndGetPrice(await mockUSDC.getAddress())
+            ).to.be.revertedWith("Price too old");
+        });
+
+        it("Should reject large price changes", async function() {
+            await mockFTSO.setPrice21(USDC_FEED, 100000000n, 8);
+            await claimsManager.updateAndGetPrice(await mockUSDC.getAddress());
+
+            await mockFTSO.setPrice21(USDC_FEED, 70000000n, 8);
+            await expect(
+                claimsManager.updateAndGetPrice(await mockUSDC.getAddress())
+            ).to.be.revertedWith("Price change too large");
+        });
+
+        it("Should allow price changes within limits", async function() {
+            await mockFTSO.setPrice21(USDC_FEED, 100000000n, 8);
+            await claimsManager.updateAndGetPrice(await mockUSDC.getAddress());
+
+            await mockFTSO.setPrice21(USDC_FEED, 85000000n, 8);
+            await claimsManager.updateAndGetPrice(await mockUSDC.getAddress());
+            const price = await claimsManager.getTokenPrice(await mockUSDC.getAddress());
+            expect(price).to.equal(ethers.parseUnits("0.85", 18));
         });
     });
 
