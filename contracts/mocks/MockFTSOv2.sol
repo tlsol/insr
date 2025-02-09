@@ -35,6 +35,10 @@ contract MockFTSOv2 is IFTSOv2 {
         });
     }
 
+    /// @notice Sets a price using bytes21
+    /// @param priceId Symbol as bytes21
+    /// @param priceValue New price value
+    /// @param precision Number of decimals for the price
     function setPrice21(
         bytes21 priceId,
         uint64 priceValue,

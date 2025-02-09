@@ -18,7 +18,7 @@ module.exports = {
   },
   networks: {
     bsc: {
-      url: "https://bsc-dataseed1.binance.org",
+      url: "https://bsc-dataseed.binance.org/",
       chainId: 56,
       accounts: [PRIVATE_KEY],
       gasPrice: 3000000000, // 3 gwei
@@ -44,8 +44,8 @@ module.exports = {
   },
   etherscan: {
     apiKey: {
-      bsc: BSCSCAN_API_KEY,
-      bscTestnet: BSCSCAN_API_KEY
+      bscTestnet: process.env.BSCSCAN_API_KEY,
+      bsc: process.env.BSCSCAN_API_KEY
     },
     customChains: [
       {
