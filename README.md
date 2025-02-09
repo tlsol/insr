@@ -1,50 +1,47 @@
 # insr.finance
+## built by [@tlsol](https://github.com/tlsol) during the [2025 ethoxford](https://ethoxford.io/) hackathon!!  
+thanku homedao && josh for the invite & opportunity to build something with the community!  
+solo submission, no team, because why not?  
 
-A decentralized insurance protocol for stablecoin depeg protection, built on BSC network. Protect your USDC holdings against depegging events with our automated claims system and earn yield through Venus Protocol integration.
+this is a defi insurance protocol that's here to protect your bags when stablecoins decide to go unstable 😱
+built on BSC, it lets you protect against depeg events. plus, you can earn some sweet yield through Venus Protocol while you're at it!
 
-## Features
+## what's cool about it? 🚀
 
-- 🛡️ Purchase stablecoin depeg insurance
-  - Flexible coverage amounts (100-50,000 USDC)
-  - Multiple duration options
-  - Automated premium calculation
-  - Real-time price feeds via Flare FTSO
+- 🛡️ cheap, cheap depeg insurance
+  - almost any amount (100-50k USDC)
+  - pick how long you want coverage
+  - premiums calculated automagically
+  - real-time price tracking via Flare FTSO
 
-- 💰 Stake assets to become an insurer
-  - Earn premiums from insurance policies
-  - Automated premium distribution
-  - Risk-adjusted returns
-  - Earn additional yield through Venus Protocol
+- 💰 become an insurer LP & stack that bread
+  - earn premiums from policies
+  - auto premium distribution
+  - risk-adjusted returns (fancy way of saying smart yields)
+  - extra yield through Venus Protocol? yes please!
 
-- 🤖 Automated Claims Processing
-  - Real-time price monitoring via Flare FTSO
-  - Instant payouts on depeg events
-  - Transparent verification process
-  - Blacklist protection against exploits
+- 🤖 claims? we got you covered
+  - real-time price watching via Flare FTSO
+  - instant payouts when stuff goes south
+  - transparent af verification
+  - blacklist to keep the bad guys out
 
-## Tech Stack
+## tech stack for the nerds 🤓
 
-- **Smart Contracts**
-  - Solidity
-  - Hardhat
-  - Venus Protocol Integration
-  - Flare FTSO Integration
-  - Comprehensive test suite (100+ tests)
+- **smart contracts**
+  - Solidity (the good stuff)
+  - Hardhat (testing? we got 100+ of em!)
+  - Venus Protocol integration (for that sweet yield)
+  - Flare FTSO integration (keeping it real with price feeds)
 
-- **Frontend**
-  - Next.js 14 with App Router
-  - TypeScript
-  - TailwindCSS
-  - RainbowKit + wagmi for wallet connection
-  - Ethers.js v6
+- **frontend**
+  - Next.js 14 with App Router (bleeding edge, baby!)
+  - TypeScript (because we're responsible adults)
+  - TailwindCSS (looking fresh)
+  - RainbowKit + wagmi (wallet connect made easy)
+  - Ethers.js v6 (the latest and greatest)
 
-- **Infrastructure**
-  - Deployed on BSC Network
-  - Venus Protocol for yield generation
-  - Flare FTSO for price feeds
-  - USDC as base currency
-
-## Contract Addresses (BSC Mainnet)
+## where to find us on BSC 📍 we are 100% live and running!
 
 - Insurance Pool: `0x9F1F6C30bF3060f23D9768e9325DCa3D70daA769`
 - Staking Pool: `0x3681B912bF0861c52aEeC26a8b8d03938734f8b5`
@@ -52,21 +49,21 @@ A decentralized insurance protocol for stablecoin depeg protection, built on BSC
 - Premium Calculator: `0xb7919719381647b3bBC724F13b46873f25102422`
 - USDC: `0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d`
 
-## Development
+## wanna run it locally? 🏃‍♂️
 
-### Prerequisites
-- Node.js 18+
-- npm/yarn
+### you'll need
+- Node.js 18+ (we're not cavemen)
+- npm/yarn (dealer's choice)
 - BSC RPC URL
 - Venus Protocol knowledge
 - Flare FTSO understanding
 
-### Testing
-The project includes a comprehensive test suite covering all aspects of the protocol:
+### testing
+i included a comprehensive test suite covering all aspects of the protocol:
 
-## Local Development
+## local development
 
-1. Clone the repository:
+1. clone the repo:
 ```
 bash
 
@@ -77,63 +74,62 @@ cd insr
 npm install
 ``` 
 
-2. Set up your environment variables:
+2. set up your environment variables:
 ```
 cp .env.example .env
 ```
 
-Required environment variables:
+REQUIRED environment variables:
 - `BSC_RPC_URL`
 - `VENUS_ORACLE_URL`
 - `FLARE_RPC_URL`
 - `FLARE_FTSO_ADDRESS`
 
-3. Run tests:
+3. run some tests:
 ```
 npx hardhat test
 ```
 
-4. Deploy contracts:  
+4. deploy contracts:  
 ```
 npx hardhat run scripts/deploy-bsc.ts --network bsc
 ```
 
-5. Start the frontend:
+5. start the frontend:
 ```
 cd insurance-frontend 
 npm run dev
 ```
 
-## Architecture
+## architecture details
 
-- **Smart Contracts**: 
-  - Modular design with separate pools
-  - Venus Protocol integration for yield
-  - Flare FTSO integration for price feeds
-  - Automated claims verification
-  - Emergency controls and circuit breakers
+- **smart contracts**: 
+  - modular design with separate pools
+  - venus protocol integration for yield
+  - flare fts integration for price feeds
+  - automated claims verification
+  - emergency controls and circuit breakers
 
-- **Claims Processing**: 
-  - Real-time price monitoring via Flare FTSO
-  - Automated verification
-  - Instant payouts
-  - Anti-exploit protections
+- **claims processing**: 
+  - real-time price monitoring via flare fts
+  - automated verification
+  - instant payouts
+  - anti-exploit protections
 
-- **Premium Calculation**: 
-  - Risk-based dynamic pricing
-  - Coverage amount scaling
-  - Market conditions adjustment
-  - Historical FTSO data integration
+- **premium calcs**: 
+  - risk-based dynamic pricing
+  - coverage amount scaling
+  - market conditions adjustment
+  - historical fts data integration
 
-## Security
+## security
 
-- Comprehensive test coverage
-- Emergency pause functionality
-- Blacklist system for suspicious addresses
-- Rate limiting on claims
-- Venus Protocol integration safety checks
-- Flare FTSO price feed validation
-- Multi-sig admin controls
+- comprehensive test coverage
+- emergency pause functionality
+- blacklist system for suspicious addresses
+- rate limiting on claims
+- venus protocol integration safety checks
+- flare FTSO price feed validation
 
 ## License
 
