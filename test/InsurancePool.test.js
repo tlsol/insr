@@ -2,54 +2,41 @@ const { expect } = require("chai");
 const { ethers } = require("hardhat");
 
 describe("InsurancePool", function() {
-    let stakingPool, claimsManager, calculator, insurancePool, mockUSDC, mockVToken, mockVenusPool, mockFTSO, mockRegistry;
+    let insurancePool, stakingPool, mockUSDC, mockVenusPool, mockFTSO, calculator;
     let owner, user, insurer;
-    
+
     beforeEach(async function() {
         [owner, user, insurer] = await ethers.getSigners();
-        
-        // Deploy mock tokens
+
+        // Deploy mocks first
         const MockToken = await ethers.getContractFactory("MockERC20");
-        mockUSDC = await MockToken.deploy("USD Coin", "USDC", 6);
+        mockUSDC = await MockToken.deploy(
+            "USDC",     // name
+            "USDC",     // symbol
+            6           // decimals
+        );
         await mockUSDC.waitForDeployment();
 
-        // Deploy mock vToken
-        const MockVToken = await ethers.getContractFactory("MockVToken");
-        mockVToken = await MockVToken.deploy("vUSDC", "vUSDC", await mockUSDC.getAddress());
-        await mockVToken.waitForDeployment();
-
-        // Deploy mock Venus pool
-        const MockVenusPool = await ethers.getContractFactory("MockVenusPool");
-        mockVenusPool = await MockVenusPool.deploy(
-            await mockUSDC.getAddress(),
-            await mockVToken.getAddress()
-        );
-        await mockVenusPool.waitForDeployment();
-
-        // Deploy mock FTSO
-        const MockFTSOv2 = await ethers.getContractFactory("MockFTSOv2");
-        mockFTSO = await MockFTSOv2.deploy();
+        const MockFTSO = await ethers.getContractFactory("MockFTSOv2");
+        mockFTSO = await MockFTSO.deploy();
         await mockFTSO.waitForDeployment();
 
-        // Deploy mock registry
-        const MockRegistry = await ethers.getContractFactory("MockRegistry");
-        mockRegistry = await MockRegistry.deploy(await mockFTSO.getAddress());
-        await mockRegistry.waitForDeployment();
+        // Deploy MockVenusPool first
+        const MockVenusPool = await ethers.getContractFactory("MockVenusPool");
+        mockVenusPool = await MockVenusPool.deploy();
+        await mockVenusPool.waitForDeployment();
 
-        // Deploy StakingPool first
+        // Deploy StakingPool with VenusPool address
         const StakingPool = await ethers.getContractFactory("StakingPool");
-        stakingPool = await StakingPool.deploy(
-            await mockRegistry.getAddress(),
-            await mockVenusPool.getAddress()
-        );
+        stakingPool = await StakingPool.deploy(await mockVenusPool.getAddress());
         await stakingPool.waitForDeployment();
 
-        // Deploy calculator
+        // Deploy Calculator first
         const Calculator = await ethers.getContractFactory("PremiumCalculator");
         calculator = await Calculator.deploy();
         await calculator.waitForDeployment();
 
-        // Deploy InsurancePool with required dependencies
+        // Deploy InsurancePool with both required args
         const InsurancePool = await ethers.getContractFactory("InsurancePool");
         insurancePool = await InsurancePool.deploy(
             await stakingPool.getAddress(),
@@ -57,51 +44,32 @@ describe("InsurancePool", function() {
         );
         await insurancePool.waitForDeployment();
 
-        // Configure InsurancePool's components
-        await insurancePool.updateComponent("stakingPool", await stakingPool.getAddress());
-        await insurancePool.updateComponent("calculator", await calculator.getAddress());
+        // Set up relationships after deployment
+        await stakingPool.setInsurancePool(await insurancePool.getAddress());
 
-        // Deploy ClaimsManager with all dependencies
+        // Deploy ClaimsManager with correct args
         const ClaimsManager = await ethers.getContractFactory("ClaimsManager");
-        claimsManager = await ClaimsManager.deploy(
-            await mockFTSO.getAddress(),
+        const claimsManager = await ClaimsManager.deploy(
             await mockUSDC.getAddress(),
             await insurancePool.getAddress(),
-            await stakingPool.getAddress()
+            await stakingPool.getAddress(),
+            await mockFTSO.getAddress()
         );
         await claimsManager.waitForDeployment();
 
-        // Update InsurancePool's claimsManager component
+        // Update ClaimsManager setup
         await insurancePool.updateComponent("claimsManager", await claimsManager.getAddress());
 
-        // Configure USDC in StakingPool
-        await stakingPool.addStablecoin(
-            await mockUSDC.getAddress(),
-            ethers.parseUnits("100", 6),  // minStake
-            6  // decimals
-        );
-
-        // Configure calculator for USDC
+        // Configure USDC in calculator
         await calculator.addStablecoin(
             await mockUSDC.getAddress(),
             6,  // decimals
-            ethers.parseUnits("1", 6),  // minCoverage
-            ethers.parseUnits("1000000", 6)  // maxCoverage
+            ethers.parseUnits("100", 6),  // min coverage
+            ethers.parseUnits("50000", 6)  // max coverage
         );
 
-        // Setup for policy purchase tests
-        await mockUSDC.mint(insurer.address, ethers.parseUnits("1000", 6));
-        await mockUSDC.connect(insurer).approve(
-            await stakingPool.getAddress(),
-            ethers.MaxUint256
-        );
-        await stakingPool.connect(insurer).stake(
-            await mockUSDC.getAddress(),
-            ethers.parseUnits("1000", 6)
-        );
-
-        // Add before purchasePolicy test
-        await mockUSDC.mint(user.address, ethers.parseUnits("1000", 6));
+        // Mint some USDC to user for policy purchase
+        await mockUSDC.mint(user.address, ethers.parseUnits("10000", 6));
         await mockUSDC.connect(user).approve(
             await insurancePool.getAddress(),
             ethers.MaxUint256
@@ -134,13 +102,31 @@ describe("InsurancePool", function() {
 
     describe("Claims Management", function() {
         it("Should approve claims manager for multiple stablecoins", async function() {
-            await insurancePool.approveClaimsManager(
-                await mockUSDC.getAddress(),
-                ethers.parseUnits("10000", 6)
-            );
+            // Deploy mock FTSO first
+            const MockFTSO = await ethers.getContractFactory("MockFTSOv2");
+            const mockFTSO = await MockFTSO.deploy();
+            await mockFTSO.waitForDeployment();
 
-            expect(await insurancePool.claimsManagerAllowance(await mockUSDC.getAddress()))
-                .to.equal(ethers.parseUnits("10000", 6));
+            // Deploy ClaimsManager with correct args
+            const ClaimsManager = await ethers.getContractFactory("ClaimsManager");
+            const claimsManager = await ClaimsManager.deploy(
+                await mockUSDC.getAddress(),
+                await insurancePool.getAddress(),
+                await stakingPool.getAddress(),
+                await mockFTSO.getAddress()
+            );
+            await claimsManager.waitForDeployment();
+
+            // Set ClaimsManager in InsurancePool
+            await insurancePool.updateComponent("claimsManager", await claimsManager.getAddress());
+
+            // Now approve
+            await insurancePool.approveClaimsManager(await mockUSDC.getAddress(), ethers.MaxUint256);
+            
+            expect(await mockUSDC.allowance(
+                await insurancePool.getAddress(),
+                await claimsManager.getAddress()
+            )).to.equal(ethers.MaxUint256);
         });
     });
 }); 

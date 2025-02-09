@@ -7,6 +7,7 @@ async function main() {
   // Base mainnet addresses
   const PYTH_ADDRESS = "0x8250f4aF4B972684F7b336503E2D6dFeDeB1487a";
   const USDC_ADDRESS = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
+  const DAI_ADDRESS = "0x50c5725949A6F0c72E6C4a641F24049A917DB0Cb";
   
   console.log("Deploying contracts to Base...");
 
@@ -25,13 +26,21 @@ async function main() {
   );
   console.log("USDC added to StakingPool");
 
-  // 3. Verify contract (optional but recommended)
+  // 3. Add DAI with correct parameters
+  await stakingPool.addStablecoin(
+    DAI_ADDRESS,
+    ethers.parseUnits("100", 18), // 100 DAI minimum
+    18
+  );
+  console.log("DAI added to StakingPool");
+
+  // 4. Verify contract (optional but recommended)
   await hre.run("verify:verify", {
     address: await stakingPool.getAddress(),
     constructorArguments: [AAVE_POOL_ADDRESS]
   });
 
-  // 4. Update frontend config
+  // 5. Update frontend config
   console.log("\nFrontend config update required:");
   console.log(`STAKING_POOL_ADDRESS: "${await stakingPool.getAddress()}"`);
 

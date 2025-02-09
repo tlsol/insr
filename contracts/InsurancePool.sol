@@ -47,10 +47,7 @@ contract InsurancePool is Ownable, Pausable, ReentrancyGuard {
     event ComponentUpdated(string indexed name, address newAddress);
     event ClaimsManagerApproved(address stablecoin, uint256 amount);
 
-    constructor(
-        address _stakingPool,
-        address _calculator
-    ) {
+    constructor(address _stakingPool, address _calculator) {
         stakingPool = IStakingPool(_stakingPool);
         calculator = IPremiumCalculator(_calculator);
     }

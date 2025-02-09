@@ -4,33 +4,71 @@ pragma solidity ^0.8.20;
 import "../interfaces/IFTSOv2.sol";
 
 contract MockFTSOv2 is IFTSOv2 {
-    mapping(bytes21 => uint256) public prices;
-    mapping(bytes21 => int8) public decimals;
-
-    constructor() {} // Empty constructor to fix deployment
-
-    function setPrice(bytes21 feedId, uint256 price, int8 decimal) external {
-        prices[feedId] = price;
-        decimals[feedId] = decimal;
+    struct PriceData {
+        uint64 price;
+        uint32 decimalPrecision;
+        uint256 timestamp;
     }
 
-    function getCurrentPrice(bytes21 _symbol) external view returns (uint256, uint256, uint256, bool) {
-        return (prices[_symbol], block.timestamp, uint256(uint8(decimals[_symbol])), true);
-    }
+    mapping(bytes32 => PriceData) private priceRecords;
 
-    function getFeedsById(bytes21[] memory _feedIds) external view returns (
-        uint256[] memory _feedValues,
-        int8[] memory _decimals,
-        uint64 _timestamp
-    ) {
-        _feedValues = new uint256[](_feedIds.length);
-        _decimals = new int8[](_feedIds.length);
+    constructor() {}
 
-        for(uint i = 0; i < _feedIds.length; i++) {
-            _feedValues[i] = prices[_feedIds[i]];
-            _decimals[i] = decimals[_feedIds[i]];
+    function setPrice(
+        bytes memory priceId,
+        uint64 priceValue,
+        uint32 precision
+    ) external {
+        bytes32 storageId;
+        if (priceId.length == 21) {
+            storageId = bytes32(bytes.concat(priceId, bytes11(0)));
+        } else if (priceId.length == 32) {
+            storageId = bytes32(priceId);
+        } else {
+            revert("Invalid price ID length");
         }
+        
+        priceRecords[storageId] = PriceData({
+            price: priceValue,
+            decimalPrecision: precision,
+            timestamp: block.timestamp
+        });
+    }
 
-        _timestamp = uint64(block.timestamp);
+    function setPrice21(
+        bytes21 priceId,
+        uint64 priceValue,
+        uint32 precision
+    ) external {
+        bytes32 storageId = bytes32(bytes.concat(priceId, bytes11(0)));
+        priceRecords[storageId] = PriceData({
+            price: priceValue,
+            decimalPrecision: precision,
+            timestamp: block.timestamp
+        });
+    }
+
+    function getPrice(bytes21 priceId) external view returns (PriceData memory) {
+        return priceRecords[bytes32(bytes.concat(priceId, bytes11(0)))];
+    }
+
+    function getFeedsById(bytes21[] memory _feedIds) external view override returns (
+        uint256[] memory _values,
+        int8[] memory _decimals,
+        uint256[] memory _timestamps
+    ) {
+        _values = new uint256[](_feedIds.length);
+        _decimals = new int8[](_feedIds.length);
+        _timestamps = new uint256[](_feedIds.length);
+        
+        for (uint i = 0; i < _feedIds.length; i++) {
+            bytes32 storageId = bytes32(bytes.concat(_feedIds[i], bytes11(0)));
+            PriceData memory data = priceRecords[storageId];
+            _values[i] = uint256(data.price);
+            _decimals[i] = -int8(uint8(data.decimalPrecision));
+            _timestamps[i] = data.timestamp;
+        }
+        
+        return (_values, _decimals, _timestamps);
     }
 } 

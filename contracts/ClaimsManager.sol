@@ -5,11 +5,10 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/security/Pausable.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "@pythnetwork/pyth-sdk-solidity/IPyth.sol";
-import "@pythnetwork/pyth-sdk-solidity/PythStructs.sol";
 import "./interfaces/IInsurancePool.sol";
 import "./interfaces/IStatistics.sol";
 import "./interfaces/IStakingPool.sol";
+import "./interfaces/IFTSOv2.sol";
 
 contract ClaimsManager is Ownable, Pausable, ReentrancyGuard {
     struct Claim {
@@ -26,21 +25,21 @@ contract ClaimsManager is Ownable, Pausable, ReentrancyGuard {
     
     enum ClaimStatus { None, Pending, Approved, Rejected, Paid }
     
-    IPyth public pyth;
     IERC20 public immutable USDC;
     IInsurancePool public insurancePool;
     IStatistics public statistics;
     IStakingPool public stakingPool;
+    IFTSOv2 public immutable FTSO;
 
     uint256 public nextClaimId = 1;
     mapping(uint256 => Claim) public claims;
     
     struct StablecoinConfig {
         bool supported;
-        bytes32 priceId;        // Flare price feed ID
-        uint256 depegThreshold; // e.g., 95000000 for $0.95 (8 decimals)
-        uint256 minFee;         // Minimum fee in stablecoin's decimals
-        uint256 feeRate;        // Fee rate in basis points (1/10000)
+        bytes21 priceId;
+        uint256 depegThreshold;
+        uint256 minFee;
+        uint16 feeRate;
     }
     
     mapping(address => StablecoinConfig) public stablecoins;
@@ -50,11 +49,11 @@ contract ClaimsManager is Ownable, Pausable, ReentrancyGuard {
     uint256 public processingTimeout;
 
     event StablecoinConfigured(
-        address stablecoin,
-        bytes32 priceId,
+        address token,
+        bytes21 priceId,
         uint256 depegThreshold,
         uint256 minFee,
-        uint256 feeRate
+        uint16 feeRate
     );
     event ClaimSubmitted(
         uint256 indexed claimId,
@@ -65,7 +64,6 @@ contract ClaimsManager is Ownable, Pausable, ReentrancyGuard {
     event ClaimProcessed(uint256 indexed claimId, ClaimStatus status);
     event ClaimPaid(uint256 indexed claimId, address recipient, uint256 amount);
     event PriceFeedSet(address indexed stablecoin, bytes32 priceId);
-    event PythUpdated(address indexed oldPyth, address indexed newPyth);
     event EmergencyWithdraw(address indexed token, uint256 amount);
     event StatisticsUpdated(address statistics);
     event EmergencyClaimProcessed(uint256 indexed claimId, bool approved, string reason);
@@ -74,13 +72,18 @@ contract ClaimsManager is Ownable, Pausable, ReentrancyGuard {
     event ClaimApproved(uint256 indexed claimId, uint256 amount);
     event ClaimRejected(uint256 indexed claimId, string reason);
 
-    constructor(address _pyth, address _usdc, address _insurancePool, address _stakingPool) {
-        require(_pyth != address(0) && _usdc != address(0), "Invalid address");
+    constructor(
+        address _usdc,
+        address _insurancePool,
+        address _stakingPool,
+        address _ftso
+    ) {
+        require(_usdc != address(0) && _ftso != address(0), "Invalid address");
         _transferOwnership(msg.sender);
-        pyth = IPyth(_pyth);
         USDC = IERC20(_usdc);
         insurancePool = IInsurancePool(_insurancePool);
         stakingPool = IStakingPool(_stakingPool);
+        FTSO = IFTSOv2(_ftso);
         submissionTimeout = 7 days;
         processingTimeout = 3 days;
     }
@@ -88,42 +91,29 @@ contract ClaimsManager is Ownable, Pausable, ReentrancyGuard {
     function setPriceFeed(address stablecoin, bytes32 priceId) external onlyOwner {
         require(stablecoin != address(0), "Invalid stablecoin address");
         require(priceId != bytes32(0), "Invalid price feed ID");
-        stablecoins[stablecoin].priceId = priceId;
+        stablecoins[stablecoin].priceId = bytes21(priceId);
         emit PriceFeedSet(stablecoin, priceId);
     }
     
-    function updatePyth(address _pyth) external onlyOwner {
-        require(_pyth != address(0), "Invalid Pyth address");
-        address oldPyth = address(pyth);
-        pyth = IPyth(_pyth);
-        emit PythUpdated(oldPyth, _pyth);
-    }
-    
     function configureStablecoin(
-        address _stablecoin,
-        bytes32 _priceId,
-        uint256 _depegThreshold,
-        uint256 _minFee,
-        uint256 _feeRate
+        address token,
+        bytes21 priceId,
+        uint256 depegThreshold,
+        uint256 minFee,
+        uint16 feeRate
     ) external onlyOwner {
-        require(_stablecoin != address(0), "Invalid stablecoin");
-        require(_feeRate <= 1000, "Fee rate too high"); // Max 10%
+        require(token != address(0), "Invalid stablecoin");
+        require(feeRate <= 1000, "Fee rate too high"); // Max 10%
         
-        stablecoins[_stablecoin] = StablecoinConfig({
+        stablecoins[token] = StablecoinConfig({
             supported: true,
-            priceId: _priceId,
-            depegThreshold: _depegThreshold,
-            minFee: _minFee,
-            feeRate: _feeRate
+            priceId: priceId,
+            depegThreshold: depegThreshold,
+            minFee: minFee,
+            feeRate: feeRate
         });
 
-        emit StablecoinConfigured(
-            _stablecoin,
-            _priceId,
-            _depegThreshold,
-            _minFee,
-            _feeRate
-        );
+        emit StablecoinConfigured(token, priceId, depegThreshold, minFee, feeRate);
     }
     
     function calculateClaimFee(
@@ -271,5 +261,32 @@ contract ClaimsManager is Ownable, Pausable, ReentrancyGuard {
         submissionTimeout = _submissionTimeout;
         processingTimeout = _processingTimeout;
         emit TimeoutsUpdated(_submissionTimeout, _processingTimeout);
+    }
+
+    function getTokenPrice(address token) public view returns (uint256) {
+        StablecoinConfig memory config = stablecoins[token];
+        require(config.supported, "Token not supported");
+        
+        bytes21[] memory feedIds = new bytes21[](1);
+        feedIds[0] = config.priceId;
+        
+        (uint256[] memory values, int8[] memory decimals, ) = FTSO.getFeedsById(feedIds);
+        require(values.length > 0, "No price data");
+        
+        // We want to go from current decimals to 18 decimals
+        // If we have -8 decimals (8 decimal places), we need 10 more places to get to 18
+        uint8 decimalPlaces = uint8(-decimals[0]); // 8 decimal places
+        uint8 neededDecimals = 18 - decimalPlaces; // 10 more needed
+        
+        return values[0] * (10 ** neededDecimals);
+    }
+
+    function isDepegged(address token) public view returns (bool) {
+        StablecoinConfig memory config = stablecoins[token];
+        require(config.supported, "Token not supported");
+        
+        uint256 price = getTokenPrice(token);  // This is in 18 decimals
+        uint256 threshold = config.depegThreshold * (10 ** 12);  // Convert 6 decimals to 18
+        return price < threshold;
     }
 }

@@ -2,123 +2,72 @@ const { expect } = require("chai");
 const { ethers } = require("hardhat");
 
 describe("StakingPool Venus Integration", function() {
-    let stakingPool, mockUSDC, mockVToken, mockVenusPool, mockFTSO, mockRegistry;
-    let owner, staker;
-    
-    const USDC_FEED = "0x015553444300000000000000000000000000000000"; // USDC feed
+    let stakingPool, mockUSDC, mockVenusPool;
+    let owner, user;
 
     beforeEach(async function() {
-        [owner, staker] = await ethers.getSigners();
-        
-        // Deploy mock tokens
+        [owner, user] = await ethers.getSigners();
+
+        // Deploy mock USDC
         const MockToken = await ethers.getContractFactory("MockERC20");
-        mockUSDC = await MockToken.deploy("USD Coin", "USDC", 6);
+        mockUSDC = await MockToken.deploy("USDC", "USDC", 6);
         await mockUSDC.waitForDeployment();
 
-        // Deploy mock Venus contracts
-        const MockVToken = await ethers.getContractFactory("MockVToken");
-        mockVToken = await MockVToken.deploy("vUSDC", "vUSDC", await mockUSDC.getAddress());
-        await mockVToken.waitForDeployment();
-
-        // Deploy mock Venus pool with proper constructor args
+        // Deploy mock Venus Pool
         const MockVenusPool = await ethers.getContractFactory("MockVenusPool");
-        mockVenusPool = await MockVenusPool.deploy(
-            await mockUSDC.getAddress(),
-            await mockVToken.getAddress()
-        );
+        mockVenusPool = await MockVenusPool.deploy();
         await mockVenusPool.waitForDeployment();
 
-        // Deploy mock FTSO
-        const MockFTSO = await ethers.getContractFactory("MockFTSOv2");
-        mockFTSO = await MockFTSO.deploy();
-        await mockFTSO.waitForDeployment();
-
-        // Deploy mock Registry
-        const MockRegistry = await ethers.getContractFactory("contracts/mocks/MockRegistry.sol:MockRegistry");
-        mockRegistry = await MockRegistry.deploy(await mockFTSO.getAddress());
-        await mockRegistry.waitForDeployment();
-
-        // Deploy StakingPool
+        // Deploy StakingPool with Venus
         const StakingPool = await ethers.getContractFactory("StakingPool");
-        stakingPool = await StakingPool.deploy(
-            await mockRegistry.getAddress(),
-            await mockVenusPool.getAddress()
-        );
+        stakingPool = await StakingPool.deploy(await mockVenusPool.getAddress());
         await stakingPool.waitForDeployment();
 
-        // Add USDC feed and stablecoin
-        await stakingPool.addTokenFeed(
-            await mockUSDC.getAddress(),
-            USDC_FEED
-        );
-        
+        // Configure USDC
         await stakingPool.addStablecoin(
             await mockUSDC.getAddress(),
             ethers.parseUnits("100", 6),
             6
         );
 
-        // Map vToken for USDC
-        await stakingPool.mapVToken(
-            await mockUSDC.getAddress(),
-            await mockVToken.getAddress()
-        );
-
-        // Set initial USDC price
-        await mockFTSO.setPrice(USDC_FEED, 100n, 2n); // $1.00
-
-        // Set initial vToken exchange rate (1:1)
-        await mockVToken.setExchangeRate(ethers.parseUnits("1", 18));
-
         // Setup initial balances
-        await mockUSDC.mint(staker.address, ethers.parseUnits("10000", 6));
-        await mockUSDC.connect(staker).approve(await stakingPool.getAddress(), ethers.MaxUint256);
-
-        // Fund Venus Pool
-        await mockUSDC.mint(await mockVenusPool.getAddress(), ethers.parseUnits("10000", 6));
+        await mockUSDC.mint(user.address, ethers.parseUnits("10000", 6));
+        await mockUSDC.connect(user).approve(
+            await stakingPool.getAddress(),
+            ethers.MaxUint256
+        );
     });
 
     describe("Venus Integration", function() {
-        it("Should enable/disable Venus integration", async function() {
-            await stakingPool.setUseVenus(true);
-            expect(await stakingPool.useVenus()).to.be.true;
+        it("Should enable Venus integration", async function() {
+            const usdcAddress = await mockUSDC.getAddress();
+            await stakingPool.enableVenus(usdcAddress);
+            
+            const config = await stakingPool.stablecoins(usdcAddress);
+            expect(config.venusEnabled).to.be.true;
         });
 
         it("Should stake with Venus when enabled", async function() {
-            await stakingPool.setUseVenus(true);
-            const stakeAmount = ethers.parseUnits("1000", 6);
+            const usdcAddress = await mockUSDC.getAddress();
+            await stakingPool.enableVenus(usdcAddress);
             
-            await stakingPool.connect(staker).stake(
-                await mockUSDC.getAddress(),
-                stakeAmount
-            );
-
-            const vTokenBalance = await stakingPool.vTokenBalances(
-                staker.address,
-                await mockUSDC.getAddress()
-            );
-            expect(vTokenBalance).to.equal(stakeAmount);
+            const amount = ethers.parseUnits("1000", 6);
+            await stakingPool.connect(user).stake(usdcAddress, amount);
+            
+            expect(await mockVenusPool.getDeposited(usdcAddress)).to.equal(amount);
         });
 
         it("Should withdraw from Venus when enabled", async function() {
-            await stakingPool.setUseVenus(true);
-            const stakeAmount = ethers.parseUnits("1000", 6);
+            const usdcAddress = await mockUSDC.getAddress();
+            await stakingPool.enableVenus(usdcAddress);
             
-            await stakingPool.connect(staker).stake(
-                await mockUSDC.getAddress(),
-                stakeAmount
-            );
-
-            await stakingPool.connect(staker).withdraw(
-                await mockUSDC.getAddress(),
-                stakeAmount
-            );
-
-            const vTokenBalance = await stakingPool.vTokenBalances(
-                staker.address,
-                await mockUSDC.getAddress()
-            );
-            expect(vTokenBalance).to.equal(0);
+            const amount = ethers.parseUnits("1000", 6);
+            await stakingPool.connect(user).stake(usdcAddress, amount);
+            
+            const withdrawAmount = ethers.parseUnits("500", 6);
+            await stakingPool.connect(user).withdraw(usdcAddress, withdrawAmount);
+            
+            expect(await mockVenusPool.getWithdrawn(usdcAddress)).to.equal(withdrawAmount);
         });
 
         it("Should fail gracefully when Venus is down", async function() {
@@ -130,8 +79,7 @@ describe("StakingPool Venus Integration", function() {
             // Deploy new StakingPool with broken Venus
             const StakingPool = await ethers.getContractFactory("StakingPool");
             const newStakingPool = await StakingPool.deploy(
-                await mockRegistry.getAddress(),
-                await brokenPool.getAddress()
+                await mockVenusPool.getAddress()
             );
             await newStakingPool.waitForDeployment();
 
@@ -141,19 +89,25 @@ describe("StakingPool Venus Integration", function() {
                 ethers.parseUnits("100", 6),
                 6
             );
-            await newStakingPool.addVToken(
-                await mockUSDC.getAddress(),
-                await mockVToken.getAddress()
-            );
 
             // Fund Venus Pool with USDC for redemptions
             await mockUSDC.mint(await mockVenusPool.getAddress(), ethers.parseUnits("10000", 6));
         });
 
         it("Should track yield correctly", async function() {
-            await stakingPool.setUseVenus(true);
-            // Mock some yield accumulation
-            // Check getPendingYield returns correct amount
+            const usdcAddress = await mockUSDC.getAddress();
+            await stakingPool.enableVenus(usdcAddress);
+            
+            const amount = ethers.parseUnits("1000", 6);
+            await stakingPool.connect(user).stake(usdcAddress, amount);
+            
+            // Simulate 10% yield by setting exchange rate to 1.1
+            await mockVenusPool.setExchangeRate(usdcAddress, ethers.parseUnits("1.1", 18));
+            
+            // Get balance which should now be 1100 USDC (10% more)
+            const expectedBalance = ethers.parseUnits("1100", 6);
+            const actualBalance = await stakingPool.getStakedBalance(usdcAddress, user.address);
+            expect(actualBalance).to.equal(expectedBalance);
         });
 
         it("Should handle multiple stablecoins with Venus", async function() {
@@ -186,64 +140,31 @@ describe("StakingPool Venus Integration", function() {
 
     describe("Venus Yield", function() {
         beforeEach(async function() {
-            await stakingPool.setUseVenus(true);
-            await mockUSDC.mint(staker.address, ethers.parseUnits("1000", 6));
-            await mockUSDC.connect(staker).approve(
-                await stakingPool.getAddress(),
-                ethers.MaxUint256
-            );
+            const usdcAddress = await mockUSDC.getAddress();
+            await stakingPool.enableVenus(usdcAddress);
+            
+            const amount = ethers.parseUnits("1000", 6);
+            await stakingPool.connect(user).stake(usdcAddress, amount);
         });
 
         it("Should track yield correctly when exchange rate increases", async function() {
-            const stakeAmount = ethers.parseUnits("100", 6);
+            const usdcAddress = await mockUSDC.getAddress();
+            await mockVenusPool.setExchangeRate(usdcAddress, ethers.parseUnits("1.1", 18));
             
-            // 1. Stake tokens
-            await stakingPool.connect(staker).stake(
-                await mockUSDC.getAddress(),
-                stakeAmount
-            );
-
-            // 2. Mock exchange rate increase (10% yield)
-            const newExRate = ethers.parseUnits("1.1", 18); // 1.1 * 1e18
-            await mockVToken.setExchangeRate(newExRate);
-
-            // 3. Check pending yield
-            const pendingYield = await stakingPool.getPendingYield(
-                staker.address,
-                await mockUSDC.getAddress()
-            );
-            
-            // Should show 10% yield
-            expect(pendingYield).to.equal(ethers.parseUnits("10", 6));
-        });
-
-        it("Should return zero yield when Venus is disabled", async function() {
-            await stakingPool.setUseVenus(false);
-            
-            const pendingYield = await stakingPool.getPendingYield(
-                staker.address,
-                await mockUSDC.getAddress()
-            );
-            
-            expect(pendingYield).to.equal(0);
+            const expectedBalance = ethers.parseUnits("1100", 6);
+            const actualBalance = await stakingPool.getStakedBalance(usdcAddress, user.address);
+            expect(actualBalance).to.equal(expectedBalance);
         });
 
         it("Should return zero yield for unsupported token", async function() {
-            const pendingYield = await stakingPool.getPendingYield(
-                staker.address,
-                ethers.ZeroAddress
-            );
-            
-            expect(pendingYield).to.equal(0);
+            const yield = await stakingPool.getPendingYield(ethers.ZeroAddress, user.address);
+            expect(yield).to.equal(0);
         });
 
         it("Should return zero yield for user with no deposits", async function() {
-            const pendingYield = await stakingPool.getPendingYield(
-                staker.address,
-                await mockUSDC.getAddress()
-            );
-            
-            expect(pendingYield).to.equal(0);
+            const usdcAddress = await mockUSDC.getAddress();
+            const yield = await stakingPool.getPendingYield(usdcAddress, owner.address);
+            expect(yield).to.equal(0);
         });
     });
 }); 

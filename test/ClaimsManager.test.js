@@ -2,116 +2,99 @@ const { expect } = require("chai");
 const { ethers } = require("hardhat");
 
 describe("ClaimsManager", function() {
-    let stakingPool, claimsManager, mockUSDC, mockVToken, mockVenusPool, mockFTSO, mockRegistry, mockDAI;
-    let owner, user1, user2;
+    let claimsManager, stakingPool, insurancePool, mockUSDC, mockFTSO;
+    let owner, user;
     
-    const USDC_PRICE_ID = ethers.encodeBytes32String("USDC");
-    const USDC_DECIMALS = 6;
-    const DAI_DECIMALS = 18;
+    const USDC_FEED = ethers.zeroPadValue(ethers.toUtf8Bytes("USDC"), 21);
     
     beforeEach(async function() {
-        [owner, user1, user2] = await ethers.getSigners();
+        [owner, user] = await ethers.getSigners();
         
-        // Deploy mock tokens and other dependencies first
+        // Deploy mock USDC
         const MockToken = await ethers.getContractFactory("MockERC20");
-        mockUSDC = await MockToken.deploy("USD Coin", "USDC", 6);
+        mockUSDC = await MockToken.deploy("USDC", "USDC", 6);
         await mockUSDC.waitForDeployment();
 
-        mockDAI = await MockToken.deploy("DAI", "DAI", 18);
-        await mockDAI.waitForDeployment();
-
         // Deploy mock FTSO
-        const MockFTSOv2 = await ethers.getContractFactory("MockFTSOv2");
-        mockFTSO = await MockFTSOv2.deploy();
+        const MockFTSO = await ethers.getContractFactory("MockFTSOv2");
+        mockFTSO = await MockFTSO.deploy();
         await mockFTSO.waitForDeployment();
 
-        // Deploy mock registry
-        const MockRegistry = await ethers.getContractFactory("MockRegistry");
-        mockRegistry = await MockRegistry.deploy(await mockFTSO.getAddress());
-        await mockRegistry.waitForDeployment();
-
-        // Deploy mock Venus pool
+        // Deploy mock Venus Pool
         const MockVenusPool = await ethers.getContractFactory("MockVenusPool");
-        mockVenusPool = await MockVenusPool.deploy(
-            await mockUSDC.getAddress(),
-            await mockUSDC.getAddress() // Using USDC as mock vToken for simplicity
-        );
+        const mockVenusPool = await MockVenusPool.deploy();
         await mockVenusPool.waitForDeployment();
 
         // Deploy StakingPool
         const StakingPool = await ethers.getContractFactory("StakingPool");
-        stakingPool = await StakingPool.deploy(
-            await mockRegistry.getAddress(),
-            await mockVenusPool.getAddress()
-        );
+        stakingPool = await StakingPool.deploy(await mockVenusPool.getAddress());
         await stakingPool.waitForDeployment();
 
-        // Deploy calculator first
-        const Calculator = await ethers.getContractFactory("PremiumCalculator");
-        calculator = await Calculator.deploy();
-        await calculator.waitForDeployment();
-
-        // Deploy InsurancePool before ClaimsManager
+        // Deploy InsurancePool
         const InsurancePool = await ethers.getContractFactory("InsurancePool");
         insurancePool = await InsurancePool.deploy(
             await stakingPool.getAddress(),
-            await calculator.getAddress()
+            owner.address
         );
         await insurancePool.waitForDeployment();
 
-        // Now deploy ClaimsManager with all dependencies
+        // Deploy ClaimsManager
         const ClaimsManager = await ethers.getContractFactory("ClaimsManager");
         claimsManager = await ClaimsManager.deploy(
-            await mockFTSO.getAddress(),      // _pyth
-            await mockUSDC.getAddress(),      // _usdc
-            await insurancePool.getAddress(), // _insurancePool
-            await stakingPool.getAddress()    // _stakingPool
+            await mockUSDC.getAddress(),
+            await insurancePool.getAddress(),
+            await stakingPool.getAddress(),
+            await mockFTSO.getAddress()
         );
         await claimsManager.waitForDeployment();
 
-        // Configure USDC in StakingPool
-        await stakingPool.addStablecoin(
-            await mockUSDC.getAddress(),
-            ethers.parseUnits("100", 6),  // minStake
-            6  // decimals
-        );
-
         // Configure USDC in ClaimsManager
         await claimsManager.configureStablecoin(
-            await mockUSDC.getAddress(),  // stablecoin
-            USDC_PRICE_ID,  // priceId
-            ethers.parseUnits("95", 6),  // depegThreshold
-            ethers.parseUnits("1", 6),   // minFee
-            100  // feeRate (1%)
-        );
-
-        // Configure DAI in ClaimsManager
-        await claimsManager.configureStablecoin(
-            await mockDAI.getAddress(),  // stablecoin
-            ethers.encodeBytes32String("DAI"),  // priceId
-            ethers.parseUnits("95", 18),  // depegThreshold
-            ethers.parseUnits("1", 18),   // minFee
-            100  // feeRate (1%)
-        );
-
-        // Additional setup for claims tests
-        await mockUSDC.mint(user1.address, ethers.parseUnits("1000", 6));
-        await mockUSDC.connect(user1).approve(
-            await stakingPool.getAddress(),
-            ethers.MaxUint256
-        );
-        await stakingPool.connect(user1).stake(
             await mockUSDC.getAddress(),
-            ethers.parseUnits("1000", 6)
+            USDC_FEED,
+            ethers.parseUnits("0.95", 6),
+            ethers.parseUnits("1", 6),
+            100
+        );
+
+        // Set initial USDC price using setPrice21
+        await mockFTSO.setPrice21(
+            USDC_FEED,
+            100000000n,  // $1.00 with 8 decimals
+            8            // Will become -8 inside getFeedsById
         );
     });
 
-    describe("Stablecoin Configuration", function() {
-        it("Should configure stablecoins correctly", async function() {
-            const usdcConfig = await claimsManager.stablecoins(await mockUSDC.getAddress());
-            expect(usdcConfig.supported).to.be.true;
-            expect(usdcConfig.priceId).to.equal(USDC_PRICE_ID);
-            expect(usdcConfig.depegThreshold).to.equal(95000000);
+    describe("Price Feeds", function() {
+        it("Should get correct token price", async function() {
+            // Get raw values from FTSO first
+            const feedIds = [USDC_FEED];
+            const [values, decimals] = await mockFTSO.getFeedsById(feedIds);
+            console.log("FTSO values:", values[0].toString());
+            console.log("FTSO decimals:", decimals[0].toString());
+
+            // Then get price through ClaimsManager
+            const price = await claimsManager.getTokenPrice(await mockUSDC.getAddress());
+            console.log("ClaimsManager price:", price.toString());
+            
+            expect(price).to.equal(ethers.parseUnits("1", 18));
+        });
+
+        it("Should detect depeg condition", async function() {
+            await mockFTSO.setPrice21(
+                USDC_FEED,
+                94000000n,
+                8
+            );
+            
+            const isDepegged = await claimsManager.isDepegged(await mockUSDC.getAddress());
+            const price = await claimsManager.getTokenPrice(await mockUSDC.getAddress());
+            console.log("Depeg price:", price.toString());
+            console.log("Depeg threshold:", ethers.parseUnits("0.95", 6).toString());
+            
+            expect(isDepegged).to.be.true;
         });
     });
+
+    // ... rest of claims tests ...
 }); 

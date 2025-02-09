@@ -43,7 +43,7 @@ describe("PremiumCalculator", function() {
             await mockDAI.getAddress(),
             DAI_DECIMALS,
             ethers.parseUnits("100", DAI_DECIMALS),     // 100 DAI min
-            ethers.parseUnits("50000", DAI_DECIMALS)    // 50k DAI max
+            ethers.parseUnits("1000000", DAI_DECIMALS)    // 1,000,000 DAI max
         );
     });
 
@@ -149,6 +149,22 @@ describe("PremiumCalculator", function() {
             );
             
             expect(premium).to.equal(coverage * 300n / 10000n);
+        });
+    });
+
+    describe("DAI Premium Calculations", function() {
+        it("Should calculate correct premium for DAI", async function() {
+            const coverage = ethers.parseUnits("1000", DAI_DECIMALS);
+            const duration = 30 * 24 * 60 * 60; // 30 days
+            
+            const premium = await calculator.calculatePremium(
+                await mockDAI.getAddress(),
+                coverage,
+                duration
+            );
+            
+            // Verify premium calculation
+            expect(premium).to.be.gt(0);
         });
     });
 }); 

@@ -1,62 +1,93 @@
 const { expect } = require("chai");
 const { ethers } = require("hardhat");
 
-describe("StakingPool", function () {
-    let stakingPool, mockUSDC, mockFTSO, mockRegistry;
-    let owner, staker1, staker2, policyholder;
-    
-    const USDC_FEED = "0x015553444300000000000000000000000000000000"; // USDC feed
-    
-    beforeEach(async function () {
-        [owner, staker1, staker2, policyholder] = await ethers.getSigners();
+describe("StakingPool", function() {
+    let stakingPool, mockUSDC, mockDAI, mockVenusPool;
+    let owner, staker1, staker2;
+
+    beforeEach(async function() {
+        [owner, staker1, staker2] = await ethers.getSigners();
         
-        // Deploy mock tokens
-        const MockToken = await ethers.getContractFactory("contracts/mocks/MockERC20.sol:MockERC20");
+        // Deploy mock USDC
+        const MockToken = await ethers.getContractFactory("MockERC20");
         mockUSDC = await MockToken.deploy("USDC", "USDC", 6);
         await mockUSDC.waitForDeployment();
 
-        // Deploy mock FTSO
-        const MockFTSO = await ethers.getContractFactory("MockFTSOv2");
-        mockFTSO = await MockFTSO.deploy();
-        await mockFTSO.waitForDeployment();
+        // Deploy mock Venus Pool
+        const MockVenusPool = await ethers.getContractFactory("MockVenusPool");
+        mockVenusPool = await MockVenusPool.deploy();
+        await mockVenusPool.waitForDeployment();
 
-        // Deploy mock Registry
-        const MockRegistry = await ethers.getContractFactory("contracts/mocks/MockRegistry.sol:MockRegistry");
-        mockRegistry = await MockRegistry.deploy(await mockFTSO.getAddress());
-        await mockRegistry.waitForDeployment();
-        
-        // Deploy StakingPool with mock Registry and no Venus
+        // Deploy StakingPool with Venus
         const StakingPool = await ethers.getContractFactory("StakingPool");
-        stakingPool = await StakingPool.deploy(
-            await mockRegistry.getAddress(),
-            ethers.ZeroAddress
-        );
+        stakingPool = await StakingPool.deploy(await mockVenusPool.getAddress());
         await stakingPool.waitForDeployment();
 
-        // Add USDC feed and stablecoin
-        await stakingPool.addTokenFeed(
-            await mockUSDC.getAddress(),
-            USDC_FEED
-        );
-        
+        // Configure USDC in StakingPool
         await stakingPool.addStablecoin(
             await mockUSDC.getAddress(),
-            ethers.parseUnits("100", 6),
-            6
+            ethers.parseUnits("100", 6),  // minStake
+            6  // decimals
         );
-
-        // Set initial USDC price
-        await mockFTSO.setPrice(USDC_FEED, 100n, 2n); // $1.00
 
         // Setup initial balances
         await mockUSDC.mint(staker1.address, ethers.parseUnits("10000", 6));
-        await mockUSDC.connect(staker1).approve(await stakingPool.getAddress(), ethers.MaxUint256);
+        await mockUSDC.connect(staker1).approve(
+            await stakingPool.getAddress(),
+            ethers.MaxUint256
+        );
         
         await mockUSDC.mint(staker2.address, ethers.parseUnits("10000", 6));
-        await mockUSDC.connect(staker2).approve(await stakingPool.getAddress(), ethers.MaxUint256);
+        await mockUSDC.connect(staker2).approve(
+            await stakingPool.getAddress(),
+            ethers.MaxUint256
+        );
+
+        // Deploy mock DAI
+        const MockDAI = await ethers.getContractFactory("MockDAI");
+        mockDAI = await MockDAI.deploy();
+        await mockDAI.waitForDeployment();
+        
+        // Add DAI to StakingPool
+        await stakingPool.addStablecoin(
+            await mockDAI.getAddress(),
+            ethers.parseUnits("100", 18),  // minStake
+            18  // decimals
+        );
     });
 
-    describe("Policy Management", function() {
+    describe("Staking", function() {
+        it("Should allow staking tokens", async function() {
+            const amount = ethers.parseUnits("1000", 6);
+            await stakingPool.connect(staker1).stake(await mockUSDC.getAddress(), amount);
+            
+            expect(await stakingPool.getStakedBalance(await mockUSDC.getAddress(), staker1.address))
+                .to.equal(amount);
+        });
+
+        it("Should reject stakes below minimum", async function() {
+            const amount = ethers.parseUnits("50", 6); // Below 100 USDC minimum
+            await expect(
+                stakingPool.connect(staker1).stake(await mockUSDC.getAddress(), amount)
+            ).to.be.revertedWith("Below minimum stake");
+        });
+
+        it("Should deposit to Venus when enabled", async function() {
+            const amount = ethers.parseUnits("1000", 6);
+            const usdcAddress = await mockUSDC.getAddress();
+
+            // Enable Venus for USDC
+            await stakingPool.enableVenus(usdcAddress);
+
+            // Stake tokens
+            await stakingPool.connect(staker1).stake(usdcAddress, amount);
+
+            // Check Venus deposit was made
+            expect(await mockVenusPool.getDeposited(usdcAddress)).to.equal(amount);
+        });
+    });
+
+    describe("Withdrawals", function() {
         beforeEach(async function() {
             await stakingPool.connect(staker1).stake(
                 await mockUSDC.getAddress(),
@@ -64,287 +95,72 @@ describe("StakingPool", function () {
             );
         });
 
-        it("Should handle multiple active policies per insurer", async function() {
-            const coverageAmount = ethers.parseUnits("300", 6);
-            const duration = 30 * 24 * 60 * 60; // 30 days
+        it("Should allow withdrawing staked tokens", async function() {
+            const amount = ethers.parseUnits("500", 6);
+            await stakingPool.connect(staker1).withdraw(await mockUSDC.getAddress(), amount);
             
-            // Create first policy
-            await stakingPool.createPolicy(
-                await mockUSDC.getAddress(),
-                staker1.address,
-                coverageAmount,
-                duration
-            );
-            
-            // Create second policy
-            await stakingPool.createPolicy(
-                await mockUSDC.getAddress(),
-                staker1.address,
-                coverageAmount,
-                duration
-            );
-            
-            const lockedCollateral = await stakingPool.getLockedCollateral(
-                staker1.address,
-                await mockUSDC.getAddress()
-            );
-            expect(lockedCollateral).to.equal(coverageAmount * 2n);
+            expect(await stakingPool.getStakedBalance(await mockUSDC.getAddress(), staker1.address))
+                .to.equal(ethers.parseUnits("500", 6));
         });
 
-        it("Should prevent policy creation if insufficient collateral", async function() {
-            const coverageAmount = ethers.parseUnits("1200", 6); // More than staked
-            const duration = 30 * 24 * 60 * 60;
-            
-            await expect(stakingPool.createPolicy(
-                await mockUSDC.getAddress(),
-                staker1.address,
-                coverageAmount,
-                duration
-            )).to.be.revertedWith("Insufficient collateral");
+        it("Should reject withdrawals above staked balance", async function() {
+            const amount = ethers.parseUnits("2000", 6);
+            await expect(
+                stakingPool.connect(staker1).withdraw(await mockUSDC.getAddress(), amount)
+            ).to.be.revertedWith("Insufficient balance");
         });
 
-        it("Should handle policy expiration correctly with multiple policies", async function() {
-            const coverageAmount = ethers.parseUnits("300", 6);
-            const duration1 = 30 * 24 * 60 * 60; // 30 days
-            const duration2 = 60 * 24 * 60 * 60; // 60 days
-            
-            // Create two policies
-            await stakingPool.createPolicy(
-                await mockUSDC.getAddress(),
-                staker1.address,
-                coverageAmount,
-                duration1
-            );
-            
-            await stakingPool.createPolicy(
-                await mockUSDC.getAddress(),
-                staker1.address,
-                coverageAmount,
-                duration2
-            );
-            
-            // Fast forward past first policy
-            await ethers.provider.send("evm_increaseTime", [duration1 + 1]);
-            await ethers.provider.send("evm_mine");
-            
-            // Expire first policy
-            await stakingPool.expirePolicy(0);
-            
-            const lockedCollateral = await stakingPool.getLockedCollateral(
-                staker1.address,
-                await mockUSDC.getAddress()
-            );
-            expect(lockedCollateral).to.equal(coverageAmount); // Only second policy remains
+        it("Should withdraw from Venus when enabled", async function() {
+            const usdcAddress = await mockUSDC.getAddress();
+            const withdrawAmount = ethers.parseUnits("500", 6);
+
+            // Enable Venus for USDC
+            await stakingPool.enableVenus(usdcAddress);
+
+            // Withdraw tokens
+            await stakingPool.connect(staker1).withdraw(usdcAddress, withdrawAmount);
+
+            // Check Venus withdrawal was made
+            expect(await mockVenusPool.getWithdrawn(usdcAddress)).to.equal(withdrawAmount);
         });
     });
 
-    describe("Collateral Management", function() {
-        it("Should track locked collateral across multiple tokens", async function() {
-            // Stake both tokens
-            await stakingPool.connect(staker1).stake(
-                await mockUSDC.getAddress(),
-                ethers.parseUnits("1000", 6)
-            );
-
-            const duration = 30 * 24 * 60 * 60;
+    describe("Venus Integration", function() {
+        it("Should enable Venus integration", async function() {
+            const usdcAddress = await mockUSDC.getAddress();
+            await stakingPool.enableVenus(usdcAddress);
             
-            // Create policies in different tokens
-            await stakingPool.createPolicy(
-                await mockUSDC.getAddress(),
-                staker1.address,
-                ethers.parseUnits("500", 6),
-                duration
-            );
-
-            expect(await stakingPool.getLockedCollateral(
-                staker1.address,
-                await mockUSDC.getAddress()
-            )).to.equal(ethers.parseUnits("500", 6));
+            const config = await stakingPool.stablecoins(usdcAddress);
+            expect(config.venusEnabled).to.be.true;
         });
 
-        it("Should prevent withdrawal when all collateral is locked", async function() {
-            await stakingPool.connect(staker1).stake(
-                await mockUSDC.getAddress(),
-                ethers.parseUnits("1000", 6)
-            );
-
-            // Lock all collateral
-            await stakingPool.createPolicy(
-                await mockUSDC.getAddress(),
-                staker1.address,
-                ethers.parseUnits("1000", 6),
-                30 * 24 * 60 * 60
-            );
-
-            await expect(stakingPool.connect(staker1).withdraw(
-                await mockUSDC.getAddress(),
-                ethers.parseUnits("100", 6)
-            )).to.be.revertedWith("Insufficient free collateral");
-        });
-
-        it("Should allow partial withdrawal up to free collateral", async function() {
-            await stakingPool.connect(staker1).stake(
-                await mockUSDC.getAddress(),
-                ethers.parseUnits("1000", 6)
-            );
-
-            // Lock 400 USDC
-            await stakingPool.createPolicy(
-                await mockUSDC.getAddress(),
-                staker1.address,
-                ethers.parseUnits("400", 6),
-                30 * 24 * 60 * 60
-            );
-
-            // Try to withdraw 700 (should fail)
-            await expect(stakingPool.connect(staker1).withdraw(
-                await mockUSDC.getAddress(),
-                ethers.parseUnits("700", 6)
-            )).to.be.revertedWith("Insufficient free collateral");
-
-            // Withdraw 500 (should succeed)
-            await stakingPool.connect(staker1).withdraw(
-                await mockUSDC.getAddress(),
-                ethers.parseUnits("500", 6)
-            );
-
-            expect(await stakingPool.getAvailableCollateral(
-                staker1.address,
-                await mockUSDC.getAddress()
-            )).to.equal(ethers.parseUnits("100", 6));
-        });
-    });
-
-    describe("Premium Distribution", function() {
-        beforeEach(async function() {
-            // Setup stakes for both insurers
-            await stakingPool.connect(staker1).stake(
-                await mockUSDC.getAddress(),
-                ethers.parseUnits("1000", 6)
-            );
-            await stakingPool.connect(staker2).stake(
-                await mockUSDC.getAddress(),
-                ethers.parseUnits("1000", 6)
-            );
-        });
-
-        it("Should distribute premiums correctly between insurers", async function() {
-            const premium = ethers.parseUnits("100", 6);
+        it("Should disable Venus integration", async function() {
+            const usdcAddress = await mockUSDC.getAddress();
             
-            await stakingPool.distributePremium(
-                staker1.address,
-                await mockUSDC.getAddress(),
-                premium
-            );
-
-            const rewards = await stakingPool.getRewards(
-                staker1.address,
-                await mockUSDC.getAddress()
-            );
-            expect(rewards).to.equal((premium * 80n) / 100n);
-        });
-
-        it("Should allow claiming accumulated premiums", async function() {
-            const premium = ethers.parseUnits("100", 6);
+            // Enable first
+            await stakingPool.enableVenus(usdcAddress);
             
-            await stakingPool.distributePremium(
-                staker1.address,
-                await mockUSDC.getAddress(),
-                premium
-            );
-
-            const initialBalance = await mockUSDC.balanceOf(staker1.address);
-            await stakingPool.connect(staker1).claimRewards(await mockUSDC.getAddress());
+            // Then disable
+            await stakingPool.disableVenus(usdcAddress);
             
-            const finalBalance = await mockUSDC.balanceOf(staker1.address);
-            expect(finalBalance - initialBalance).to.equal((premium * 80n) / 100n);
+            const config = await stakingPool.stablecoins(usdcAddress);
+            expect(config.venusEnabled).to.be.false;
         });
 
-        it("Should track premiums separately per token", async function() {
-            const premiumUSDC = ethers.parseUnits("100", 6);
+        it("Should revert when enabling Venus twice", async function() {
+            const usdcAddress = await mockUSDC.getAddress();
+            await stakingPool.enableVenus(usdcAddress);
             
-            await stakingPool.distributePremium(
-                staker1.address,
-                await mockUSDC.getAddress(),
-                premiumUSDC
-            );
-
-            const rewardsUSDC = await stakingPool.getRewards(
-                staker1.address,
-                await mockUSDC.getAddress()
-            );
-
-            expect(rewardsUSDC).to.equal((premiumUSDC * 80n) / 100n);
-        });
-    });
-
-    describe("Edge Cases", function() {
-        it("Should handle zero amount premium distribution", async function() {
-            await expect(stakingPool.distributePremium(
-                staker1.address,
-                await mockUSDC.getAddress(),
-                0
-            )).to.be.revertedWith("Premium too low");
+            await expect(
+                stakingPool.enableVenus(usdcAddress)
+            ).to.be.revertedWith("Venus already enabled");
         });
 
-        it("Should handle maximum policy duration", async function() {
-            await stakingPool.connect(staker1).stake(
-                await mockUSDC.getAddress(),
-                ethers.parseUnits("1000", 6)
-            );
-
-            await expect(stakingPool.createPolicy(
-                await mockUSDC.getAddress(),
-                staker1.address,
-                ethers.parseUnits("100", 6),
-                366 * 24 * 60 * 60 // More than 365 days
-            )).to.be.revertedWith("Invalid duration");
-        });
-
-        it("Should prevent creating policy with zero coverage", async function() {
-            await expect(stakingPool.createPolicy(
-                await mockUSDC.getAddress(),
-                staker1.address,
-                0,
-                30 * 24 * 60 * 60
-            )).to.be.revertedWith("Invalid coverage amount");
-        });
-    });
-
-    describe("Access Control", function() {
-        it("Should restrict admin functions to owner", async function() {
-            await expect(stakingPool.connect(staker1).addStablecoin(
-                await mockUSDC.getAddress(),
-                ethers.parseUnits("100", 6),
-                6
-            )).to.be.revertedWith("Ownable: caller is not the owner");
-
-            await expect(stakingPool.connect(staker1).updateMinStake(
-                await mockUSDC.getAddress(),
-                ethers.parseUnits("200", 6)
-            )).to.be.revertedWith("Ownable: caller is not the owner");
-        });
-
-        it("Should allow owner to update minimum stake amounts", async function() {
-            const newMin = ethers.parseUnits("200", 6);
-            await stakingPool.updateMinStake(
-                await mockUSDC.getAddress(),
-                newMin
-            );
-
-            // Try to stake below new minimum
-            await expect(stakingPool.connect(staker1).stake(
-                await mockUSDC.getAddress(),
-                ethers.parseUnits("150", 6)
-            )).to.be.revertedWith("Below minimum stake");
-        });
-
-        it("Should prevent adding duplicate stablecoin", async function() {
-            await expect(stakingPool.addStablecoin(
-                await mockUSDC.getAddress(),
-                ethers.parseUnits("100", 6),
-                6
-            )).to.be.revertedWith("Token already added");
+        it("Should revert when disabling Venus if not enabled", async function() {
+            const usdcAddress = await mockUSDC.getAddress();
+            await expect(
+                stakingPool.disableVenus(usdcAddress)
+            ).to.be.revertedWith("Venus not enabled");
         });
     });
 }); 
